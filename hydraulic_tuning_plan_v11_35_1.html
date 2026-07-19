@@ -666,6 +666,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
         <button class="btn btn-primary btn-sm" onclick="saveApiKey()">Save key</button>
         <button class="btn btn-danger btn-sm" onclick="clearApiKey()" id="aiKeyClearBtn" style="display:none">Remove key</button>
       </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:10px">
+        <label for="aiModelSelect" style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;white-space:nowrap">Model</label>
+        <select id="aiModelSelect" onchange="saveAiModel()"
+          style="border:1px solid var(--border);border-radius:6px;padding:7px 10px;font-size:13px;font-family:inherit;color:var(--text);background:#fff">
+          <option value="claude-fable-5">Claude Fable 5</option>
+          <option value="claude-opus-4-8">Claude Opus 4.8 (most capable, slower/costlier)</option>
+          <option value="claude-sonnet-5">Claude Sonnet 5 (balanced)</option>
+          <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (fastest/cheapest)</option>
+        </select>
+      </div>
       <div style="font-size:10.5px;color:var(--muted);margin-top:8px;line-height:1.5">
         Needed only for the "✨ AI analysis" button below. Get a key at
         <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com/settings/keys</a>.
@@ -3409,6 +3419,7 @@ function generateComprehensiveObservations(focusPeriodIndex) {
 }
 function renderSection6() {
   renderApiKeyStatus();
+  renderAiModelSelect();
   if (!ST.periods.length) {
     document.getElementById('obsCardList').innerHTML =
       `<div class="card" style="text-align:center;padding:32px">
@@ -3519,6 +3530,23 @@ function renderApiKeyStatus() {
   }
 }
 
+const AI_MODEL_STORAGE = 'htp_ai_model';
+const AI_MODEL_DEFAULT = 'claude-fable-5';
+
+function getSavedAiModel() { return localStorage.getItem(AI_MODEL_STORAGE) || AI_MODEL_DEFAULT; }
+
+function saveAiModel() {
+  const sel = document.getElementById('aiModelSelect');
+  if (!sel) return;
+  localStorage.setItem(AI_MODEL_STORAGE, sel.value);
+}
+
+function renderAiModelSelect() {
+  const sel = document.getElementById('aiModelSelect');
+  if (!sel) return;
+  sel.value = getSavedAiModel();
+}
+
 function toggleApiKeyVisibility() {
   const input = document.getElementById('aiApiKeyInput');
   const btn = document.getElementById('aiKeyToggleBtn');
@@ -3561,10 +3589,13 @@ async function generateAIObservations() {
     return;
   }
 
+  const model = getSavedAiModel();
+  const modelLabel = document.getElementById('aiModelSelect')?.selectedOptions?.[0]?.textContent || model;
+
   btn.disabled = true;
   const origLabel = btn.textContent;
   btn.textContent = 'Analysing…';
-  setStatus('Sending consumption data to Claude Fable 5 for analysis…');
+  setStatus(`Sending consumption data to ${modelLabel} for analysis…`);
 
   try {
     const prompt = `You are a senior Australian hydraulic services engineer reviewing BMS water consumption data for a commercial building tuning report (NABERS Water / AS-NZS 3500 context).
@@ -3584,7 +3615,7 @@ Data: ${JSON.stringify(buildAIDataSummary())}`;
         'anthropic-dangerous-direct-browser-access': 'true'
       },
       body: JSON.stringify({
-        model: 'claude-fable-5',
+        model: model,
         max_tokens: 1000,
         messages: [{ role: 'user', content: prompt }]
       })
