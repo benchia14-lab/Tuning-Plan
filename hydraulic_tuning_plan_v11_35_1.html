@@ -655,6 +655,25 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
     <!-- Focus period selector (only shown when >1 period) -->
     <div class="obs-scope-bar" id="obsScopeControl"></div>
 
+    <!-- AI analysis settings -->
+    <div class="card" id="aiKeyCard" style="padding:14px 16px;margin-bottom:14px">
+      <div class="card-title" style="margin-bottom:8px">AI Analysis — Anthropic API Key</div>
+      <div id="aiKeyStatusLine" style="font-size:12px;color:var(--muted);margin-bottom:8px"></div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input type="password" id="aiApiKeyInput" placeholder="sk-ant-…" autocomplete="off"
+          style="flex:1;min-width:220px;border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:13px;font-family:inherit">
+        <button class="btn btn-secondary btn-sm" onclick="toggleApiKeyVisibility()" id="aiKeyToggleBtn">Show</button>
+        <button class="btn btn-primary btn-sm" onclick="saveApiKey()">Save key</button>
+        <button class="btn btn-danger btn-sm" onclick="clearApiKey()" id="aiKeyClearBtn" style="display:none">Remove key</button>
+      </div>
+      <div style="font-size:10.5px;color:var(--muted);margin-top:8px;line-height:1.5">
+        Needed only for the "✨ AI analysis" button below. Get a key at
+        <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com/settings/keys</a>.
+        Stored only in this browser (localStorage) — it is never included in saved project files (.htpj) or the generated report, and is sent only to Anthropic's API.
+        Don't save a key on a shared or public computer.
+      </div>
+    </div>
+
     <!-- Toolbar -->
     <div class="obs-editor-toolbar">
       <span class="oet-label">Show:</span>
@@ -3389,6 +3408,7 @@ function generateComprehensiveObservations(focusPeriodIndex) {
   }));
 }
 function renderSection6() {
+  renderApiKeyStatus();
   if (!ST.periods.length) {
     document.getElementById('obsCardList').innerHTML =
       `<div class="card" style="text-align:center;padding:32px">
@@ -3472,6 +3492,57 @@ function buildAIDataSummary() {
   };
 }
 
+// ── AI API key management ─────────────────────────────────────────────────────
+// Stored ONLY in this browser's localStorage under its own key — deliberately
+// kept out of ST (never included in collectSnapshot/.htpj project files or
+// the generated report), so a saved project can be shared without leaking it.
+const AI_KEY_STORAGE = 'htp_ai_api_key';
+
+function getSavedApiKey() { return (localStorage.getItem(AI_KEY_STORAGE) || '').trim(); }
+
+function maskKey(key) {
+  if (key.length <= 8) return '•'.repeat(key.length);
+  return key.slice(0, 6) + '…' + key.slice(-4);
+}
+
+function renderApiKeyStatus() {
+  const line = document.getElementById('aiKeyStatusLine');
+  const clearBtn = document.getElementById('aiKeyClearBtn');
+  if (!line) return;
+  const key = getSavedApiKey();
+  if (key) {
+    line.innerHTML = `<span style="color:var(--teal-d);font-weight:600">✓ Key saved</span> — ${maskKey(key)} (used automatically for AI analysis)`;
+    if (clearBtn) clearBtn.style.display = 'inline-flex';
+  } else {
+    line.textContent = 'No API key saved yet — AI analysis will not work until one is added.';
+    if (clearBtn) clearBtn.style.display = 'none';
+  }
+}
+
+function toggleApiKeyVisibility() {
+  const input = document.getElementById('aiApiKeyInput');
+  const btn = document.getElementById('aiKeyToggleBtn');
+  if (!input) return;
+  const show = input.type === 'password';
+  input.type = show ? 'text' : 'password';
+  btn.textContent = show ? 'Hide' : 'Show';
+}
+
+function saveApiKey() {
+  const input = document.getElementById('aiApiKeyInput');
+  const val = (input.value || '').trim();
+  if (!val) { alert('Enter an API key first.'); return; }
+  localStorage.setItem(AI_KEY_STORAGE, val);
+  input.value = '';
+  renderApiKeyStatus();
+}
+
+function clearApiKey() {
+  if (!confirm('Remove the saved API key from this browser?')) return;
+  localStorage.removeItem(AI_KEY_STORAGE);
+  renderApiKeyStatus();
+}
+
 async function generateAIObservations() {
   if (!ST.periods.length) { alert('Upload BMS data first.'); return; }
   const btn  = document.getElementById('aiObsBtn');
@@ -3482,6 +3553,14 @@ async function generateAIObservations() {
     stEl.style.color = isErr ? 'var(--red)' : 'var(--teal-d)';
     stEl.textContent = msg;
   };
+
+  const apiKey = getSavedApiKey();
+  if (!apiKey) {
+    setStatus('No API key saved. Add your Anthropic API key in the box above, click "Save key", then try again.', true);
+    document.getElementById('aiApiKeyInput')?.focus();
+    return;
+  }
+
   btn.disabled = true;
   const origLabel = btn.textContent;
   btn.textContent = 'Analysing…';
@@ -3498,14 +3577,24 @@ Data: ${JSON.stringify(buildAIDataSummary())}`;
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
       body: JSON.stringify({
         model: 'claude-fable-5',
         max_tokens: 1000,
         messages: [{ role: 'user', content: prompt }]
       })
     });
-    if (!response.ok) throw new Error('API returned ' + response.status);
+    if (!response.ok) {
+      let detail = '';
+      try { detail = (await response.json())?.error?.message || ''; } catch(_) {}
+      if (response.status === 401) throw new Error('Invalid API key (401). Check the key and save it again.');
+      throw new Error('API returned ' + response.status + (detail ? ' — ' + detail : ''));
+    }
     const data = await response.json();
     const text = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
     const clean = text.replace(/```json|```/g, '').trim();
