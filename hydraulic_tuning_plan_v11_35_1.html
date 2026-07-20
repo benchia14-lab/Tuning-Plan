@@ -4410,7 +4410,55 @@ function clearApiKey() {
   renderApiKeyStatus();
 }
 
-async function generateAIObservations() {
+// ── AI observation cache ──────────────────────────────────────────────────────
+// Keyed by a hash of the exact request payload (data summary + model + prompt
+// version). If the underlying data hasn't changed since the last successful
+// run, we reuse the stored result instead of calling — and paying for — the API
+// again. Cached in localStorage so it survives a reload. Never holds the API key.
+const AI_CACHE_KEY = 'htp_ai_cache';
+const AI_CACHE_MAX = 8;
+const AI_PROMPT_VERSION = 'v1';   // bump if the prompt/output shape changes
+
+function hashString(str) {
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) h = ((h << 5) + h) ^ str.charCodeAt(i);
+  return (h >>> 0).toString(36);
+}
+
+function aiDataHash(model) {
+  return hashString(model + '|' + AI_PROMPT_VERSION + '|' + JSON.stringify(buildAIDataSummary()));
+}
+
+function readAiCache() {
+  try { const o = JSON.parse(localStorage.getItem(AI_CACHE_KEY) || '{}'); return (o && typeof o === 'object') ? o : {}; }
+  catch(_) { return {}; }
+}
+
+function writeAiCache(map) {
+  const pruned = Object.fromEntries(
+    Object.entries(map).sort((a,b) => (b[1].ts||0) - (a[1].ts||0)).slice(0, AI_CACHE_MAX)
+  );
+  try { localStorage.setItem(AI_CACHE_KEY, JSON.stringify(pruned)); }
+  catch(_) { try { localStorage.removeItem(AI_CACHE_KEY); } catch(__) {} }
+}
+
+function getAiCached(hash) {
+  const c = readAiCache()[hash];
+  return (c && Array.isArray(c.obs)) ? c : null;
+}
+
+function putAiCached(hash, obs, model) {
+  const map = readAiCache();
+  map[hash] = { ts: Date.now(), model, obs };
+  writeAiCache(map);
+}
+
+function applyAiObs(aiObs) {
+  // Replace previous AI observations; keep rule-based + custom ones.
+  ST.observations = [...ST.observations.filter(o => !o.ai), ...aiObs];
+}
+
+async function generateAIObservations(force) {
   if (!ST.periods.length) { alert('Upload BMS data first.'); return; }
   const btn  = document.getElementById('aiObsBtn');
   const stEl = document.getElementById('aiObsStatus');
@@ -4420,6 +4468,29 @@ async function generateAIObservations() {
     stEl.style.color = isErr ? 'var(--red)' : 'var(--teal-d)';
     stEl.textContent = msg;
   };
+  const setStatusHtml = (html) => {
+    stEl.style.display = 'block';
+    stEl.style.background = 'var(--teal-l)';
+    stEl.style.color = 'var(--teal-d)';
+    stEl.innerHTML = html;
+  };
+
+  const model = getSavedAiModel();
+  const modelLabel = document.getElementById('aiModelSelect')?.selectedOptions?.[0]?.textContent || model;
+  const hash = aiDataHash(model);
+
+  // Serve from cache when the data + model are unchanged, unless forced.
+  if (!force) {
+    const cached = getAiCached(hash);
+    if (cached) {
+      applyAiObs(cached.obs);
+      renderObsCards();
+      const when = new Date(cached.ts).toLocaleString('en-AU');
+      setStatusHtml(`✓ Reused a cached AI analysis from ${when} — the data is unchanged, so no API call was made (no cost). `
+        + `<button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="generateAIObservations(true)">Re-run anyway</button>`);
+      return;
+    }
+  }
 
   const apiKey = getSavedApiKey();
   if (!apiKey) {
@@ -4427,9 +4498,6 @@ async function generateAIObservations() {
     document.getElementById('aiApiKeyInput')?.focus();
     return;
   }
-
-  const model = getSavedAiModel();
-  const modelLabel = document.getElementById('aiModelSelect')?.selectedOptions?.[0]?.textContent || model;
 
   btn.disabled = true;
   const origLabel = btn.textContent;
@@ -4481,8 +4549,8 @@ Data: ${JSON.stringify(buildAIDataSummary())}`;
         notes: '', included: true, isCustom: false, ai: true
       }));
 
-    // Replace previous AI observations; keep rule-based + custom ones
-    ST.observations = [...ST.observations.filter(o => !o.ai), ...aiObs];
+    applyAiObs(aiObs);
+    putAiCached(hash, aiObs, model);   // cache so an unchanged re-run costs nothing
     renderObsCards();
     setStatus(`✓ ${aiObs.length} AI observations added — review, edit, and toggle them like any other finding.`);
   } catch (err) {
