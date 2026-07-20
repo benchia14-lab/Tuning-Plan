@@ -576,12 +576,28 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
       <div style="font-size:12.5px;color:var(--muted);line-height:1.55;margin-bottom:12px">
         Drop one or more raw exports — <strong>Timestamp, Meter Name, Consumption</strong> (columns in any order), meters-across-columns or meters-down-rows, or a single-meter BMS export (the meter name is taken from the file name). Readings are totalled into <strong>daily &amp; monthly</strong> figures automatically, and a separate reporting period is created for each calendar month. The report uses the monthly totals; the observations also scan the daily totals for anomalies.
       </div>
-      <div class="fg" style="margin-bottom:12px;max-width:340px">
-        <label>Data unit</label>
-        <select id="rawDataUnit">
-          <option value="kl">Kilolitres (kL) — no conversion</option>
-          <option value="l">Litres (L) — convert to kL (÷1000)</option>
-        </select>
+      <div style="display:flex;gap:14px;flex-wrap:wrap">
+        <div class="fg" style="margin-bottom:12px;flex:1;min-width:240px">
+          <label>Data unit</label>
+          <select id="rawDataUnit">
+            <option value="kl">Kilolitres (kL) — no conversion</option>
+            <option value="l">Litres (L) — convert to kL (÷1000)</option>
+          </select>
+        </div>
+        <div class="fg" style="margin-bottom:12px;flex:1;min-width:240px">
+          <label>Reporting period length</label>
+          <select id="rawPeriodMode" onchange="onRawPeriodModeChange()">
+            <option value="monthly">Monthly</option>
+            <option value="quarterly">Quarterly (calendar Q1–Q4)</option>
+            <option value="biannual">Bi-annual (H1 / H2)</option>
+            <option value="annual">Annual (calendar year)</option>
+            <option value="custom">Custom — every N months</option>
+          </select>
+        </div>
+        <div class="fg" id="rawCustomWrap" style="margin-bottom:12px;display:none;width:150px">
+          <label>Months per period</label>
+          <input type="number" id="rawCustomN" min="1" max="24" value="2" onchange="if(RAW_IMPORT)renderRawPreview()">
+        </div>
       </div>
       <div class="drop-zone" id="rawDropZone" onclick="document.getElementById('rawFileInput').click()">
         <span class="dz-icon">📥</span>
@@ -592,7 +608,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
       <div id="rawImportStatus" style="display:none;font-size:12px;padding:8px 12px;border-radius:6px;margin-top:12px"></div>
       <div id="rawPreview"></div>
       <div id="rawActions" style="display:none;margin-top:14px">
-        <button class="btn btn-primary" onclick="createPeriodsFromImport()">Create monthly periods →</button>
+        <button class="btn btn-primary" onclick="createPeriodsFromImport()">Create periods →</button>
         <button class="btn btn-secondary" onclick="clearRawImport()">Clear</button>
       </div>
     </div>
@@ -1948,10 +1964,15 @@ function renderRawPreview(){
     </tr>`;
   }).join('');
 
+  // Resulting reporting periods for the chosen grouping.
+  const { mode, customN } = currentRawGrouping();
+  const buckets = groupMonths(monthKeys, mode, customN);
+  const periodLabels = buckets.map(b => b.label);
+
   el.innerHTML = `
     <div style="margin-top:14px;font-size:12px;color:var(--muted)">
-      <strong style="color:var(--text)">${monthKeys.length} month${monthKeys.length>1?'s':''}</strong> detected: ${monthLabels.join(', ')}.
-      Each becomes its own reporting period. Values shown in ${unit}.
+      <strong style="color:var(--text)">${monthKeys.length} month${monthKeys.length>1?'s':''}</strong> detected (${monthLabels[0]} – ${monthLabels[monthLabels.length-1]}). Values shown in ${unit}.
+      <br>→ <strong style="color:var(--teal-d)">${buckets.length} reporting period${buckets.length>1?'s':''}</strong>: ${periodLabels.join(', ')}.
     </div>
     <div class="data-tbl-wrap" style="margin-top:10px">
       <table class="data-tbl">
@@ -1973,45 +1994,101 @@ function clearRawImport(){
   const fi = document.getElementById('rawFileInput'); if (fi) fi.value = '';
 }
 
-// Sort key for a 'Mon-YY' style period label (chronological); NaN → end.
+// Chronological sort key for a period label. Handles Mon-YY, Q# YYYY, H# YYYY,
+// YYYY, and custom "Mon-YY – Mon-YY" ranges. Unparseable → end.
 function periodChronoKey(label){
-  const mi = monthIndexFromLabel(label);
-  const ym = String(label).match(/(\d{2,4})\s*$/);
-  if (mi == null || !ym) return Infinity;
-  let y = +ym[1]; if (y < 100) y += 2000;
-  return y * 12 + mi;
+  const s = String(label).trim();
+  let m;
+  if (m = s.match(/^Q([1-4])\s+(\d{4})$/i)) return (+m[2])*12 + (+m[1]-1)*3;
+  if (m = s.match(/^H([12])\s+(\d{4})$/i))  return (+m[2])*12 + (+m[1]-1)*6;
+  if (m = s.match(/^(\d{4})$/))             return (+m[1])*12;
+  const first = s.split(/\s[–—-]\s|\s+to\s+/i)[0].trim();   // range → first part
+  const mi = monthIndexFromLabel(first);
+  const ym = first.match(/(\d{2,4})\s*$/);
+  if (mi != null && ym){ let y = +ym[1]; if (y < 100) y += 2000; return y*12 + mi; }
+  return Infinity;
+}
+
+// Group sorted 'YYYY-MM' month keys into reporting-period buckets by length.
+function groupMonths(monthKeys, mode, customN){
+  const keys = (monthKeys || []).slice().sort();
+  if (!keys.length) return [];
+  const [by, bmo] = keys[0].split('-').map(Number);
+  const baseGi = by*12 + (bmo-1);
+  const lab = mk => { const [y,mo] = mk.split('-'); return `${MON_ABBR[+mo-1]}-${y.slice(-2)}`; };
+  const map = new Map();
+  keys.forEach(mk => {
+    const [y, mo] = mk.split('-').map(Number);
+    let key, label, order;
+    if (mode === 'quarterly'){ const q = Math.floor((mo-1)/3)+1; key = `${y}Q${q}`; label = `Q${q} ${y}`; order = y*12 + (q-1)*3; }
+    else if (mode === 'biannual'){ const h = mo <= 6 ? 1 : 2; key = `${y}H${h}`; label = `H${h} ${y}`; order = y*12 + (h-1)*6; }
+    else if (mode === 'annual'){ key = `${y}`; label = `${y}`; order = y*12; }
+    else if (mode === 'custom'){ const gi = y*12+(mo-1); const bi = Math.floor((gi-baseGi)/Math.max(1, customN||1)); key = `C${bi}`; label = ''; order = gi; }
+    else { key = mk; label = lab(mk); order = y*12 + (mo-1); }
+    if (!map.has(key)) map.set(key, { label, order, monthKeys: [] });
+    const b = map.get(key); b.monthKeys.push(mk); if (order < b.order) b.order = order;
+  });
+  const buckets = [...map.values()].sort((a,b) => a.order - b.order);
+  if (mode === 'custom') buckets.forEach(b => {
+    const mk = b.monthKeys.slice().sort();
+    b.label = mk.length > 1 ? `${lab(mk[0])} – ${lab(mk[mk.length-1])}` : lab(mk[0]);
+  });
+  return buckets;
+}
+
+function currentRawGrouping(){
+  const mode = (document.getElementById('rawPeriodMode')||{}).value || 'monthly';
+  const customN = parseInt((document.getElementById('rawCustomN')||{}).value, 10) || 1;
+  return { mode, customN };
+}
+
+function onRawPeriodModeChange(){
+  const mode = document.getElementById('rawPeriodMode').value;
+  document.getElementById('rawCustomWrap').style.display = mode === 'custom' ? 'block' : 'none';
+  if (RAW_IMPORT) renderRawPreview();
 }
 
 function createPeriodsFromImport(){
   if (!RAW_IMPORT){ alert('Drop some files first.'); return; }
   const factor = document.getElementById('rawDataUnit').value === 'l' ? 0.001 : 1;
+  const { mode, customN } = currentRawGrouping();
   const meters = RAW_IMPORT.meters;
   const names = Object.keys(meters).sort();
 
-  const monthSet = {};
-  Object.values(meters).forEach(m => Object.keys(m.daily).forEach(dk => monthSet[dk.slice(0,7)] = true));
-  const monthKeys = Object.keys(monthSet).sort();
-  if (!monthKeys.length){ alert('No dated readings to build periods from.'); return; }
+  // Monthly totals per meter (unit factor applied).
+  const monthly = {};
+  names.forEach(n => {
+    monthly[n] = {};
+    Object.entries(meters[n].daily).forEach(([dk, val]) => {
+      const mk = dk.slice(0,7);
+      monthly[n][mk] = (monthly[n][mk] || 0) + val * factor;
+    });
+  });
+  const allMonthKeys = [...new Set(Object.values(monthly).flatMap(o => Object.keys(o)))].sort();
+  if (!allMonthKeys.length){ alert('No dated readings to build periods from.'); return; }
 
-  const newPeriods = monthKeys.map(mk => {
-    const [y, mo] = mk.split('-').map(Number);
-    const label = `${MON_ABBR[mo-1]}-${String(y).slice(-2)}`;
-    const daysInMonth = new Date(y, mo, 0).getDate();
+  const buckets = groupMonths(allMonthKeys, mode, customN);
+  const newPeriods = buckets.map(bucket => {
+    const mkeys = bucket.monthKeys.slice().sort();
+    const monthLabels = mkeys.map(mk => { const [y,mo] = mk.split('-'); return `${MON_ABBR[+mo-1]}-${y.slice(-2)}`; });
     const series = {}, dailySeries = {};
     names.forEach(name => {
-      const md = meters[name].daily;
-      let monthTotal = 0; const days = [];
-      for (let d = 1; d <= daysInMonth; d++){
-        const dk = `${mk}-${String(d).padStart(2,'0')}`;
-        if (md[dk] !== undefined){ const val = md[dk] * factor; days.push({ d: dk, v: round2(val) }); monthTotal += val; }
-      }
-      if (days.length){ series[name] = [round2(monthTotal)]; dailySeries[name] = days; }
+      const hasAny = mkeys.some(mk => monthly[name][mk] !== undefined);
+      if (!hasAny) return;
+      series[name] = mkeys.map(mk => round2(monthly[name][mk] || 0));
+      const days = [];
+      Object.entries(meters[name].daily).forEach(([dk, val]) => {
+        if (mkeys.includes(dk.slice(0,7))) days.push({ d: dk, v: round2(val * factor) });
+      });
+      days.sort((a,b) => a.d < b.d ? -1 : 1);
+      dailySeries[name] = days;
     });
     const dataCols = Object.keys(series);
-    const combined = [round2(dataCols.reduce((s,c) => s + series[c][0], 0))];
-    return { label, issueDate: new Date(y, mo-1, daysInMonth).toLocaleDateString('en-AU'),
-             revNo: '', months: [label], dataCols, series, dailySeries, combined,
-             actualCumul: [combined[0]], sourceMode: 'raw' };
+    const combined = monthLabels.map((_, i) => round2(dataCols.reduce((s,c) => s + (series[c][i] || 0), 0)));
+    const actualCumul = combined.map((_, i, a) => round2(a.slice(0, i+1).reduce((s,v) => s+v, 0)));
+    const [ly, lmo] = mkeys[mkeys.length-1].split('-').map(Number);
+    return { label: bucket.label, issueDate: new Date(ly, lmo, 0).toLocaleDateString('en-AU'),
+             revNo: '', months: monthLabels, dataCols, series, dailySeries, combined, actualCumul, sourceMode: 'raw' };
   });
 
   // Merge: replace any existing period sharing a label, keep the rest, sort chronologically.
@@ -2023,7 +2100,7 @@ function createPeriodsFromImport(){
   clearRawImport();
   const msg = document.getElementById('rawImportStatus');
   if (msg){ msg.style.display='block'; msg.style.background='var(--teal-l)'; msg.style.color='var(--teal-d)';
-    msg.textContent = `✓ Created/updated ${newPeriods.length} monthly period${newPeriods.length>1?'s':''}: ${newPeriods.map(p=>p.label).join(', ')}.`; }
+    msg.textContent = `✓ Created/updated ${newPeriods.length} period${newPeriods.length>1?'s':''}: ${newPeriods.map(p=>p.label).join(', ')}.`; }
   showPage('report');
   generateReport();
 }
