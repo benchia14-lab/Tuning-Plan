@@ -374,6 +374,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 .bk-when{font-size:13px;font-weight:600;color:var(--text);display:flex;align-items:center;gap:6px}
 .bk-sub{font-size:11px;color:var(--muted);margin-top:2px}
 .bk-latest{background:var(--teal);color:#fff;font-size:9px;font-weight:700;padding:2px 7px;border-radius:10px;letter-spacing:0.05em}
+
+/* Import validation modal */
+.iv-issue{display:flex;gap:9px;align-items:flex-start;padding:10px 12px;border-radius:8px;margin-bottom:8px;font-size:12.5px;line-height:1.5}
+.iv-issue:last-child{margin-bottom:0}
+.iv-ico{flex-shrink:0;font-size:14px;line-height:1.3}
+.iv-error{background:#fef2f2;border:1px solid #fca5a5;color:#7f1d1d}
+.iv-warn{background:var(--amber-l);border:1px solid #f0c675;color:#7c4a03}
+.iv-foot{display:flex;justify-content:flex-end;gap:10px;padding:14px 20px;border-top:1px solid var(--border);flex-wrap:wrap}
 </style>
 </head>
 <body>
@@ -1771,6 +1779,7 @@ function addPeriod() {
   const descCol   = ST.colMap.month || ST.headers[0];  // "month" slot = desc col in rows mode
 
   let months, dataCols, series;
+  let rawSeries = {};   // pre-coercion cell values, for data-quality validation
 
   if (orientation === 'rows') {
     // ── Rows mode: meters are rows, months are column headers ────────────────
@@ -1809,6 +1818,7 @@ function addPeriod() {
     filteredData.forEach((row, ri) => {
       const meterName = dataCols[ri];
       if (!meterName) return;
+      rawSeries[meterName] = monthCols.map(mc => row[mc]);
       series[meterName] = monthCols.map(mc => {
         let val = parseFloat(row[mc]) || 0;
         if (unit === 'l') val = val / 1000;
@@ -1840,6 +1850,7 @@ function addPeriod() {
     series = {};
     dataCols.forEach((uniqueName, i) => {
       const origHeader = rawCols[i];
+      rawSeries[uniqueName] = ST.parsedData.map(r => r[origHeader]);
       series[uniqueName] = ST.parsedData.map(r => {
         let val = parseFloat(r[origHeader]) || 0;
         if (unit === 'l') val = val / 1000;
@@ -1847,6 +1858,25 @@ function addPeriod() {
       });
     });
   }
+
+  // ── Validate before committing the period ──────────────────────────────────
+  const { errors, warnings } = validateImport(months, dataCols, series, rawSeries);
+  const payload = { label, issueDate, revNo, months, dataCols, series };
+  if (errors.length) {                       // hard problems — block until fixed
+    showImportValidation(errors, warnings, false);
+    return;
+  }
+  if (warnings.length) {                      // advisory — let the user decide
+    window.__pendingPeriod = payload;
+    showImportValidation(errors, warnings, true);
+    return;
+  }
+  finalizePeriod(payload);
+}
+
+// Commit a validated period into state and refresh the UI.
+function finalizePeriod(payload) {
+  const { label, issueDate, revNo, months, dataCols, series } = payload;
 
   const combined    = months.map((_,i) => dataCols.reduce((s,c) => s + (series[c][i]||0), 0));
   const actualCumul = combined.map((_,i,a) => a.slice(0,i+1).reduce((s,vv)=>s+vv,0));
@@ -1898,6 +1928,119 @@ function addPeriod() {
   // Navigate to View Report and auto-generate
   showPage('report');
   generateReport();
+}
+
+// ── Import validation ─────────────────────────────────────────────────────────
+// Runs when the user clicks "Add period", before the data is committed. Returns
+// { errors, warnings }: errors block the add (structural problems); warnings are
+// advisory and let the user proceed anyway.
+function validateImport(months, dataCols, series, rawSeries) {
+  const errors = [];
+  const warnings = [];
+  const capMonth = s => s.charAt(0).toUpperCase() + s.slice(1);
+  const q = arr => arr.map(x => `"${x}"`).join(', ');
+
+  // 1. Structural — these make a usable report impossible
+  if (!months.length)
+    errors.push('No month / period values were detected. Check your Step 1 column selection.');
+  if (!dataCols.length)
+    errors.push('No meter columns were detected. Check the Step 2 exclusions — you may have excluded every meter.');
+  if (errors.length) return { errors, warnings };
+
+  // 2. Month labels — parse, detect duplicates and chronological gaps
+  const parsed = months.map(m => ({ label: m, idx: monthIndexFromLabel(m) }));
+
+  const unparseable = parsed.filter(p => p.idx === null).map(p => p.label);
+  if (unparseable.length)
+    warnings.push(`${unparseable.length} period label(s) couldn't be read as a month: ${q(unparseable.slice(0,6))}${unparseable.length>6?'…':''}. Missing-month detection was skipped for these.`);
+
+  const counts = {};
+  const dups = [];
+  months.forEach(m => {
+    const k = String(m).toLowerCase();
+    counts[k] = (counts[k] || 0) + 1;
+    if (counts[k] === 2) dups.push(m);
+  });
+  if (dups.length)
+    warnings.push(`Duplicate period(s): ${q(dups)}. Each month should appear only once.`);
+
+  // Chronological gaps — walk parseable months in order, allowing a Dec→Jan wrap.
+  const known = parsed.filter(p => p.idx !== null);
+  if (known.length >= 2) {
+    const absolute = [known[0].idx];
+    for (let i = 1; i < known.length; i++) {
+      let step = known[i].idx - known[i-1].idx;
+      if (step <= 0) step += 12;            // wrapped into the next year
+      absolute.push(absolute[i-1] + step);
+    }
+    const missing = [];
+    for (let i = 1; i < absolute.length; i++) {
+      const gap = absolute[i] - absolute[i-1];
+      for (let g = 1; g < gap; g++) missing.push(MONTH_NAMES[(known[i-1].idx + g) % 12]);
+    }
+    if (missing.length)
+      warnings.push(`Possible missing month(s) between "${known[0].label}" and "${known[known.length-1].label}": ${q(missing.slice(0,8).map(capMonth))}${missing.length>8?'…':''}. Confirm the BMS export is continuous.`);
+  }
+
+  // 3. Cell-level data quality
+  let nonNumeric = 0, negatives = 0;
+  const allZeroMeters = [];
+  dataCols.forEach(c => {
+    const raw = (rawSeries && rawSeries[c]) || [];
+    const num = series[c] || [];
+    let anyPositive = false;
+    raw.forEach((rv, i) => {
+      const str = String(rv ?? '').trim();
+      if (str !== '' && isNaN(parseFloat(str.replace(/,/g, '')))) nonNumeric++;
+      if ((num[i] || 0) < 0) negatives++;
+      if ((num[i] || 0) > 0) anyPositive = true;
+    });
+    if (!anyPositive && raw.length) allZeroMeters.push(c);
+  });
+  if (nonNumeric)
+    warnings.push(`${nonNumeric} data cell(s) weren't numbers and were treated as 0. Check for text like "N/A", "-", or notes inside the data area.`);
+  if (negatives)
+    warnings.push(`${negatives} negative reading(s) found — water use can't be negative. This usually points to a meter reset or a read error.`);
+  if (allZeroMeters.length)
+    warnings.push(`${allZeroMeters.length} meter(s) read zero across every month: ${q(allZeroMeters.slice(0,6))}${allZeroMeters.length>6?'…':''}. Consider excluding them or re-checking the column mapping.`);
+
+  return { errors, warnings };
+}
+
+function showImportValidation(errors, warnings, canProceed) {
+  const old = document.getElementById('importValOverlay');
+  if (old) old.remove();
+
+  const item = (msg, kind) =>
+    `<div class="iv-issue iv-${kind}"><span class="iv-ico">${kind==='error'?'⛔':'⚠️'}</span><span>${escapeHtml(msg)}</span></div>`;
+  const body =
+    errors.map(m => item(m, 'error')).join('') +
+    warnings.map(m => item(m, 'warn')).join('');
+
+  const heading = errors.length
+    ? 'This data can\'t be added yet'
+    : 'Check before adding this period';
+  const note = errors.length
+    ? 'Fix the problem(s) below in the column mapping, then click "Add period" again.'
+    : 'The data can be added, but please confirm these look right first.';
+
+  const buttons = canProceed
+    ? `<button class="btn btn-secondary" onclick="document.getElementById('importValOverlay').remove()">Go back &amp; fix</button>
+       <button class="btn btn-primary" onclick="document.getElementById('importValOverlay').remove(); finalizePeriod(window.__pendingPeriod);">Add anyway</button>`
+    : `<button class="btn btn-primary" onclick="document.getElementById('importValOverlay').remove()">Go back &amp; fix</button>`;
+
+  const html = `<div id="importValOverlay" class="bk-overlay" onclick="if(event.target===this)this.remove()">
+    <div class="bk-modal">
+      <div class="bk-head">${heading}
+        <button class="bk-close" onclick="document.getElementById('importValOverlay').remove()">&times;</button>
+      </div>
+      <div class="bk-body">
+        <p class="bk-note">${note}</p>
+        ${body}
+      </div>
+      <div class="iv-foot">${buttons}</div>
+    </div></div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
 }
 
 function updatePeriodBanner() {
