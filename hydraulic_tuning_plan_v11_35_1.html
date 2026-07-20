@@ -4458,6 +4458,73 @@ function applyAiObs(aiObs) {
   ST.observations = [...ST.observations.filter(o => !o.ai), ...aiObs];
 }
 
+// ── Streaming helpers ─────────────────────────────────────────────────────────
+// Incrementally scan a growing text buffer and emit each complete top-level
+// JSON object as soon as its closing brace arrives — so observations can be
+// rendered while the model is still writing. Handles nested braces and braces
+// inside strings.
+function makeJsonObjectStreamer(onObject) {
+  let buf = '', i = 0, depth = 0, start = -1, inStr = false, esc = false;
+  return function push(chunk) {
+    buf += chunk;
+    for (; i < buf.length; i++) {
+      const ch = buf[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (ch === '\\') esc = true;
+        else if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') { inStr = true; }
+      else if (ch === '{') { if (depth === 0) start = i; depth++; }
+      else if (ch === '}') {
+        if (depth > 0) depth--;
+        if (depth === 0 && start >= 0) {
+          const objStr = buf.slice(start, i + 1);
+          start = -1;
+          try { onObject(JSON.parse(objStr)); } catch(_) {}
+        }
+      }
+    }
+  };
+}
+
+// Read an Anthropic SSE stream, calling onText with each text delta as it lands.
+async function consumeSSE(response, onText) {
+  const decoder = new TextDecoder();
+  let sseBuf = '';
+  const handle = (text) => {
+    sseBuf += text;
+    let nl;
+    while ((nl = sseBuf.indexOf('\n')) >= 0) {
+      const line = sseBuf.slice(0, nl).trim();
+      sseBuf = sseBuf.slice(nl + 1);
+      if (line.startsWith('data:')) {
+        const payload = line.slice(5).trim();
+        if (payload && payload !== '[DONE]') {
+          try {
+            const evt = JSON.parse(payload);
+            if (evt.type === 'content_block_delta' && evt.delta && evt.delta.type === 'text_delta') {
+              onText(evt.delta.text || '');
+            }
+          } catch(_) {}
+        }
+      }
+    }
+  };
+  const reader = response.body && response.body.getReader ? response.body.getReader() : null;
+  if (reader) {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      handle(decoder.decode(value, { stream: true }));
+    }
+    handle(decoder.decode());
+  } else {
+    handle(await response.text());   // fallback: no streaming reader available
+  }
+}
+
 async function generateAIObservations(force) {
   if (!ST.periods.length) { alert('Upload BMS data first.'); return; }
   const btn  = document.getElementById('aiObsBtn');
@@ -4524,6 +4591,7 @@ Data: ${JSON.stringify(buildAIDataSummary())}`;
       body: JSON.stringify({
         model: model,
         max_tokens: 1000,
+        stream: true,                       // stream the response back token by token
         messages: [{ role: 'user', content: prompt }]
       })
     });
@@ -4533,26 +4601,40 @@ Data: ${JSON.stringify(buildAIDataSummary())}`;
       if (response.status === 401) throw new Error('Invalid API key (401). Check the key and save it again.');
       throw new Error('API returned ' + response.status + (detail ? ' — ' + detail : ''));
     }
-    const data = await response.json();
-    const text = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
-    const clean = text.replace(/```json|```/g, '').trim();
-    const parsed = JSON.parse(clean);
-    if (!Array.isArray(parsed) || !parsed.length) throw new Error('No observations returned');
 
-    const aiObs = parsed
-      .filter(o => o && o.text)
-      .map((o, i) => ({
-        id: `ai_${Date.now()}_${i}`,
-        type: ['warn','good','info'].includes(o.type) ? o.type : 'info',
-        source: 'AI — ' + (o.source || 'Analysis'),
-        text: String(o.text),
-        notes: '', included: true, isCustom: false, ai: true
-      }));
+    const toObs = (o, i) => ({
+      id: `ai_${Date.now()}_${i}`,
+      type: ['warn','good','info'].includes(o.type) ? o.type : 'info',
+      source: 'AI — ' + (o.source || 'Analysis'),
+      text: String(o.text || ''),
+      notes: '', included: true, isCustom: false, ai: true
+    });
 
-    applyAiObs(aiObs);
-    putAiCached(hash, aiObs, model);   // cache so an unchanged re-run costs nothing
+    // Render each observation the moment its JSON object finishes streaming.
+    const liveAiObs = [];
+    const streamer = makeJsonObjectStreamer(o => {
+      if (!o || !o.text) return;
+      liveAiObs.push(toObs(o, liveAiObs.length));
+      applyAiObs(liveAiObs);
+      renderObsCards();
+      setStatus(`Streaming analysis from ${modelLabel}… ${liveAiObs.length} observation${liveAiObs.length>1?'s':''} so far.`);
+    });
+
+    let fullText = '';
+    await consumeSSE(response, t => { fullText += t; streamer(t); });
+
+    // Fallback: if the incremental parser found nothing, try a whole-text parse.
+    if (!liveAiObs.length) {
+      let parsed = null;
+      try { parsed = JSON.parse(fullText.replace(/```json|```/g, '').trim()); } catch(_) {}
+      if (Array.isArray(parsed)) parsed.filter(o => o && o.text).forEach(o => liveAiObs.push(toObs(o, liveAiObs.length)));
+    }
+    if (!liveAiObs.length) throw new Error('No observations returned');
+
+    applyAiObs(liveAiObs);
+    putAiCached(hash, liveAiObs, model);   // cache so an unchanged re-run costs nothing
     renderObsCards();
-    setStatus(`✓ ${aiObs.length} AI observations added — review, edit, and toggle them like any other finding.`);
+    setStatus(`✓ ${liveAiObs.length} AI observations added — review, edit, and toggle them like any other finding.`);
   } catch (err) {
     console.error('AI observations error:', err);
     setStatus('AI analysis failed: ' + err.message + ' — your existing observations are unchanged.', true);
