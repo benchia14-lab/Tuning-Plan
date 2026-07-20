@@ -1776,14 +1776,28 @@ function parseRawSheet(rows, filename){
   const numCols  = colType.map((t,i)=>t==='number'?i:-1).filter(i=>i>=0);
   const textCols = colType.map((t,i)=>t==='text'?i:-1).filter(i=>i>=0);
 
+  // Distinguish status/quality columns (e.g. "v0_status" full of "ok") from real
+  // meter-name columns, so a status flag is never mistaken for the meter name.
+  const STATUS_HDR = /(^|[_\s])(status|quality|flag|valid|invalid|estimated?|error|units?)([_\s]|$)/i;
+  const STATUS_VOCAB = new Set(['ok','good','bad','est','estimated','error','err','null','valid','invalid','n/a','na','none','manual','auto','automatic','normal','alarm','fault','true','false','y','n','yes','no']);
+  const colDistinct = c => { const s = new Set(); for (let i=0;i<Math.min(dataRows.length,200);i++){ const v=dataRows[i][c]; if (v!==''&&v!=null) s.add(String(v).trim().toLowerCase()); } return s; };
+  const isStatusCol = c => {
+    if (STATUS_HDR.test(headers[c] || '')) return true;
+    const d = colDistinct(c); if (!d.size) return false;
+    let inv = 0; d.forEach(x => { if (STATUS_VOCAB.has(x)) inv++; });
+    return inv / d.size >= 0.8;
+  };
+  const statusCols = textCols.filter(isStatusCol);
+  const labelCols  = textCols.filter(c => !statusCols.includes(c));       // candidate meter-name columns
+  const meterCols  = labelCols.filter(c => colDistinct(c).size >= 2);      // ≥2 distinct → a real per-row meter column
+
   const readings = [];
   const push = (meter, ts, value) => { if (ts && isFinite(value)) readings.push({ meter:String(meter).trim()||'Meter', ts, value }); };
 
-  // A) Wide, meters-as-rows: the header row is mostly dates AND column 0 holds
-  //    text (meter names). The col-0 text check distinguishes this from the
-  //    meters-as-columns layout, where column 0 is the timestamp.
   const hdrDates = headers.slice(1).filter(h => parseTimestamp(h) !== null).length;
-  if (headers.length >= 3 && colType[0] === 'text' && hdrDates >= (headers.length - 1) * 0.6){
+
+  // A) Wide, meters-as-rows: header row is mostly dates and column 0 is a label.
+  if (headers.length >= 3 && colType[0] === 'text' && !statusCols.includes(0) && hdrDates >= (headers.length - 1) * 0.6){
     dataRows.forEach(r => {
       const meter = r[0];
       if (meter === '' || meter == null) return;
@@ -1793,18 +1807,12 @@ function parseRawSheet(rows, filename){
       }
     });
   }
-  // B) Long/tidy: one date col, one number col, at least one text col (meter).
-  else if (dateCols.length === 1 && numCols.length === 1 && textCols.length >= 1){
-    const tsC = dateCols[0], valC = numCols[0], meterC = textCols[0];
+  // B) Long/tidy: a date col, a value col, and a real meter-name column (≥2 meters).
+  else if (dateCols.length >= 1 && numCols.length >= 1 && meterCols.length >= 1){
+    const tsC = dateCols[0], valC = numCols[0], meterC = meterCols[0];
     dataRows.forEach(r => push(r[meterC], parseTimestamp(r[tsC]), rawNum(r[valC])));
   }
-  // C) Single meter: one date col + one number col, no meter column → name from file.
-  else if (dateCols.length === 1 && numCols.length === 1 && textCols.length === 0){
-    const meter = rawFileBaseName(filename);
-    const tsC = dateCols[0], valC = numCols[0];
-    dataRows.forEach(r => push(meter, parseTimestamp(r[tsC]), rawNum(r[valC])));
-  }
-  // D) Wide, meters-as-columns: one date col + many number cols (headers = meters).
+  // C) Wide, meters-as-columns: a date col + multiple value cols (headers = meters).
   else if (dateCols.length === 1 && numCols.length >= 2){
     const tsC = dateCols[0];
     dataRows.forEach(r => {
@@ -1813,7 +1821,20 @@ function parseRawSheet(rows, filename){
       numCols.forEach(c => { if (rawLooksNumeric(r[c])) push(headers[c] || ('Meter ' + (c+1)), ts, rawNum(r[c])); });
     });
   }
-  // E) Fallback: two columns total → treat as single meter (date + value).
+  // D) Single meter: a date col + a value col, with any status columns ignored.
+  //    The meter name comes from a constant label column if present, else the file name.
+  else if (dateCols.length >= 1 && numCols.length >= 1){
+    const tsC = dateCols[0], valC = numCols[0];
+    let meter = rawFileBaseName(filename);
+    if (labelCols.length){                       // a constant meter-name column in the file
+      const counts = {};
+      dataRows.forEach(r => { const s = String(r[labelCols[0]] ?? '').trim(); if (s) counts[s] = (counts[s]||0) + 1; });
+      const top = Object.entries(counts).sort((a,b) => b[1]-a[1])[0];
+      if (top) meter = top[0];
+    }
+    dataRows.forEach(r => push(meter, parseTimestamp(r[tsC]), rawNum(r[valC])));
+  }
+  // E) Fallback: two columns total → single meter (date + value), name from file.
   else if (ncol === 2){
     const meter = rawFileBaseName(filename);
     dataRows.forEach(r => { const ts = parseTimestamp(r[0]) || parseTimestamp(r[1]); const val = rawLooksNumeric(r[1]) ? rawNum(r[1]) : rawNum(r[0]); push(meter, ts, val); });
@@ -1833,9 +1854,15 @@ function aggregateReadings(readings){
   const meters = {};
   Object.entries(byMeter).forEach(([name, arr]) => {
     arr.sort((a,b) => a.ts - b.ts);
-    let nonDec = 0, pairs = 0;
-    for (let i = 1; i < arr.length; i++){ pairs++; if (arr[i].value >= arr[i-1].value - 1e-9) nonDec++; }
-    const cumulative = pairs >= 5 && (nonDec/pairs) >= 0.9 && arr[arr.length-1].value > arr[0].value;
+    // Cumulative register vs interval usage. A register accumulates, so its final
+    // value reflects the total consumed: (last − first) ≈ sum of positive steps.
+    // Interval data keeps returning toward zero, so (last − first) stays small
+    // while its positive steps sum high. This distinguishes the two even when the
+    // series sits at 0 for most intervals (sparse pulse data).
+    let sumPos = 0;
+    for (let i = 1; i < arr.length; i++){ const d = arr[i].value - arr[i-1].value; if (d > 0) sumPos += d; }
+    const span = arr[arr.length-1].value - arr[0].value;
+    const cumulative = arr.length >= 20 && sumPos > 0 && span >= 0.8 * sumPos;
     const daily = {};
     if (cumulative){
       for (let i = 1; i < arr.length; i++){
