@@ -359,6 +359,21 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 .mbs-sub{font-size:10px;color:var(--muted);margin-top:1px}
 .meter-block-body{padding:14px}
 .meter-chart-wrap{position:relative;width:100%;height:160px}
+
+/* Backup chooser modal */
+.bk-overlay{position:fixed;inset:0;background:rgba(20,25,35,0.55);display:flex;align-items:center;justify-content:center;z-index:1000;padding:20px}
+.bk-modal{background:#fff;border-radius:12px;width:100%;max-width:520px;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.3);overflow:hidden}
+.bk-head{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border);font-size:15px;font-weight:700;color:var(--text)}
+.bk-close{background:none;border:none;font-size:22px;line-height:1;color:var(--muted);cursor:pointer;padding:0 4px}
+.bk-close:hover{color:var(--text)}
+.bk-body{padding:14px 20px 18px;overflow-y:auto}
+.bk-note{font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.5}
+.bk-row{display:flex;align-items:center;gap:12px;padding:11px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;background:var(--grey)}
+.bk-row:last-child{margin-bottom:0}
+.bk-meta{flex:1;min-width:0}
+.bk-when{font-size:13px;font-weight:600;color:var(--text);display:flex;align-items:center;gap:6px}
+.bk-sub{font-size:11px;color:var(--muted);margin-top:2px}
+.bk-latest{background:var(--teal);color:#fff;font-size:9px;font-weight:700;padding:2px 7px;border-radius:10px;letter-spacing:0.05em}
 </style>
 </head>
 <body>
@@ -4807,8 +4822,8 @@ function saveProjectFile() {
   URL.revokeObjectURL(url);
 
   setLastSaved(`Project file saved: ${filename}`);
-  // Also auto-update browser backup silently whenever you save a file
-  localStorage.setItem('htp_state', JSON.stringify(snap));
+  // Also record a browser backup snapshot whenever you save a file
+  pushBackup(snap, { force: true });
 }
 
 // ── File-based load (reads a .htpj file the user picks) ──────────────────────
@@ -4829,6 +4844,7 @@ function loadProjectFile(input) {
         return;
       }
       applySnapshot(snap);
+      pushBackup(snap, { force: true });   // loaded project becomes recoverable too
       const savedDate = snap._saved ? new Date(snap._saved).toLocaleString('en-AU') : 'unknown date';
       setLastSaved(`Loaded: ${file.name} (saved ${savedDate})`);
       showPage('report');
@@ -4841,29 +4857,140 @@ function loadProjectFile(input) {
   reader.readAsText(file);
 }
 
-// ── Browser localStorage backup (secondary, not primary) ─────────────────────
+// ── Browser localStorage backup — rolling history of the last N snapshots ─────
+// Instead of overwriting one slot, we keep the most recent BACKUP_MAX snapshots
+// so a bad edit or crash mid-session doesn't wipe recoverable work. Stored as a
+// single JSON array under BACKUP_KEY; the old single-slot key is kept in sync
+// (and migrated in) for backward compatibility.
+const BACKUP_KEY = 'htp_backups';   // array of {ts, snap}, newest first
+const BACKUP_MAX = 5;
+const LEGACY_BACKUP_KEY = 'htp_state';
+
+function readBackups() {
+  try {
+    const arr = JSON.parse(localStorage.getItem(BACKUP_KEY) || '[]');
+    if (Array.isArray(arr)) return arr.filter(b => b && b.snap);
+  } catch(_) {}
+  return [];
+}
+
+function writeBackups(list) {
+  // Trim to max; if we blow the storage quota, keep dropping the oldest and retry.
+  let arr = list.slice(0, BACKUP_MAX);
+  while (arr.length) {
+    try { localStorage.setItem(BACKUP_KEY, JSON.stringify(arr)); return true; }
+    catch(e) {
+      if (arr.length === 1) { console.warn('Backup too large for localStorage', e); return false; }
+      arr = arr.slice(0, -1);
+    }
+  }
+  return false;
+}
+
+// Save a snapshot into the rolling history. Skips writing when identical to the
+// newest entry, so the periodic autosave doesn't fill the ring with duplicates.
+function pushBackup(snap, opts) {
+  const force = opts && opts.force;
+  let list = readBackups();
+  // One-time migration: seed the ring from the old single-slot backup.
+  if (!list.length) {
+    try {
+      const legacy = localStorage.getItem(LEGACY_BACKUP_KEY);
+      if (legacy) {
+        const s = JSON.parse(legacy);
+        if (s) list.push({ ts: s._saved || new Date().toISOString(), snap: s });
+      }
+    } catch(_) {}
+  }
+  const json = JSON.stringify(snap);
+  if (!force && list.length && JSON.stringify(list[0].snap) === json) return true; // no change
+  list.unshift({ ts: snap._saved || new Date().toISOString(), snap });
+  const ok = writeBackups(list);
+  try { localStorage.setItem(LEGACY_BACKUP_KEY, json); } catch(_) {}
+  return ok;
+}
+
 function saveLocalBackup() {
   const snap = collectSnapshot();
-  localStorage.setItem('htp_state', JSON.stringify(snap));
-  setLastSaved('Browser backup saved (' + new Date().toLocaleTimeString('en-AU') + ')');
+  const ok = pushBackup(snap, { force: true });
+  setLastSaved(ok
+    ? 'Browser backup saved (' + new Date().toLocaleTimeString('en-AU') + ')'
+    : 'Backup failed — browser storage full. Save a project file instead.');
 }
 
 function loadLocalBackup() {
-  const raw = localStorage.getItem('htp_state');
-  if (!raw) {
+  let list = readBackups();
+  if (!list.length) {
+    // Fall back to a legacy single-slot backup if one exists.
+    try {
+      const raw = localStorage.getItem(LEGACY_BACKUP_KEY);
+      if (raw) { const s = JSON.parse(raw); if (s) list = [{ ts: s._saved || '', snap: s }]; }
+    } catch(_) {}
+  }
+  if (!list.length) {
     alert('No browser backup found.\n\nUse "Load project file" to open a saved .htpj file instead.');
     return;
   }
+  showBackupChooser(list);
+}
+
+function backupWhenLabel(ts) {
+  const d = ts ? new Date(ts) : null;
+  return (d && !isNaN(d)) ? d.toLocaleString('en-AU') : 'unknown time';
+}
+
+function showBackupChooser(list) {
+  const old = document.getElementById('backupModalOverlay');
+  if (old) old.remove();
+  window.__backupList = list;
+
+  const rows = list.map((b, i) => {
+    const when = backupWhenLabel(b.ts);
+    const np = (b.snap.periods || []).length;
+    const ns = (b.snap.systems || []).length;
+    const bn = (b.snap.fields && b.snap.fields.buildingName) || '(untitled project)';
+    return `<div class="bk-row">
+      <div class="bk-meta">
+        <div class="bk-when">${i === 0 ? '<span class="bk-latest">LATEST</span>' : ''}${when}</div>
+        <div class="bk-sub">${escapeHtml(bn)} — ${np} period(s), ${ns} system(s)</div>
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="restoreBackup(${i})">Restore</button>
+    </div>`;
+  }).join('');
+
+  const html = `<div id="backupModalOverlay" class="bk-overlay" onclick="if(event.target===this)this.remove()">
+    <div class="bk-modal">
+      <div class="bk-head">Restore browser backup
+        <button class="bk-close" onclick="document.getElementById('backupModalOverlay').remove()">&times;</button>
+      </div>
+      <div class="bk-body">
+        <p class="bk-note">The last ${list.length} auto-saved snapshot(s) from this browser, newest first. Restoring overwrites your current unsaved work — save a project file first if you're unsure.</p>
+        ${rows}
+      </div>
+    </div></div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+function restoreBackup(i) {
+  const list = window.__backupList || readBackups();
+  const b = list[i];
+  if (!b) return;
+  const when = backupWhenLabel(b.ts);
+  if (!confirm(`Restore snapshot from ${when}?\n\nThis overwrites your current unsaved work.`)) return;
   try {
-    const snap = JSON.parse(raw);
-    const savedDate = snap._saved ? new Date(snap._saved).toLocaleString('en-AU') : 'unknown date';
-    if (!confirm(`Restore browser backup from ${savedDate}?\n\n${(snap.periods||[]).length} period(s), ${(snap.systems||[]).length} system(s).\n\nThis will overwrite your current unsaved work.`)) return;
-    applySnapshot(snap);
-    setLastSaved(`Browser backup restored (saved ${savedDate})`);
+    applySnapshot(b.snap);
+    setLastSaved(`Browser backup restored (saved ${when})`);
+    const ov = document.getElementById('backupModalOverlay');
+    if (ov) ov.remove();
     showPage('report');
   } catch(err) {
-    alert('Browser backup is corrupted and cannot be restored.\n\nUse "Load project file" to open a .htpj file instead.');
+    alert('That backup could not be restored:\n\n' + err.message);
   }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 }
 
 function setLastSaved(msg) {
@@ -4871,10 +4998,10 @@ function setLastSaved(msg) {
   if (el) el.textContent = msg;
 }
 
-// Auto-save browser backup every 2 minutes while the page is open
+// Auto-save a browser backup every 2 minutes while the page is open.
 setInterval(() => {
   if (ST.periods.length || ST.systems.length) {
-    localStorage.setItem('htp_state', JSON.stringify(collectSnapshot()));
+    pushBackup(collectSnapshot());   // deduped: only writes if the data changed
   }
 }, 120000);
 
