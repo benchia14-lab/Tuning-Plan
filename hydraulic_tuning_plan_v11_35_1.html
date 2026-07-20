@@ -439,6 +439,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
   </div>
 
   <div class="sb-bottom">
+    <div class="sb-label" style="padding:0 0 6px 0;color:#6b7280">Projects</div>
+    <button class="sb-load-btn" onclick="openProjectLauncher()" style="width:100%;margin-bottom:10px" title="Switch between saved buildings/clients stored in this browser">🗂 Recent projects…</button>
+    <div class="sb-divider" style="margin:0 0 10px 0"></div>
     <div class="sb-label" style="padding:0 0 6px 0;color:#6b7280">Project file</div>
     <button class="sb-save-btn" onclick="saveProjectFile()" title="Download a .htpj file with all your data">Save project file</button>
     <label class="sb-load-btn" title="Open a previously saved .htpj file" style="display:block;text-align:center;cursor:pointer;margin-top:6px">
@@ -455,6 +458,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
       <strong style="color:#9ca3af">Browser backup</strong> is quick but tied to this browser only.
     </div>
     <div id="sb-last-saved" style="font-size:9px;color:#4b5563;margin-top:8px;min-height:14px"></div>
+    <div id="lockIndicator" style="font-size:10px;margin-top:4px;min-height:12px"></div>
   </div>
 </nav>
 
@@ -479,6 +483,32 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
       <div class="two-col">
         <div class="fg"><label>Contract / job reference</label><input type="text" id="contractRef" placeholder="e.g. 50171V"/></div>
         <div class="fg"><label>Project target (e.g. Green Star rating)</label><input type="text" id="projectTarget" placeholder="e.g. 5-Star Green Star"/></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Branding &amp; Letterhead</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.5">
+        Choose the logo used on the report cover and PDF. Add a preset per company/office — stored in this browser, not in the project file.
+      </div>
+      <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap">
+        <div style="flex:1;min-width:220px">
+          <div class="fg" style="margin-bottom:10px">
+            <label>Active branding</label>
+            <select id="brandingSelect" onchange="setActiveBranding(this.value)"></select>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <label class="btn btn-secondary btn-sm" style="cursor:pointer">
+              + Add logo preset
+              <input type="file" id="brandingLogoInput" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="addBrandingPreset(this)">
+            </label>
+            <button class="btn btn-danger btn-sm" id="brandingDeleteBtn" onclick="deleteActiveBranding()" style="display:none">Remove preset</button>
+          </div>
+        </div>
+        <div style="flex-shrink:0">
+          <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px">Preview</div>
+          <div id="brandingPreview" style="border:1px solid var(--border);border-radius:8px;padding:10px;background:#fff;min-width:160px;min-height:60px;display:flex;align-items:center;justify-content:center"></div>
+        </div>
       </div>
     </div>
 
@@ -933,6 +963,18 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
         <div class="pdf-stat" id="pdfStat">Preparing…</div>
       </div>
     </div>
+    <div class="pdf-box">
+      <h3>Export reconciled data (Excel)</h3>
+      <p>Download the cleaned, reconciled meter data as an <strong>.xlsx</strong> workbook — a summary sheet (per-period totals and mains reconciliation) plus one sheet per period with every active meter × month and the combined total. Useful for handing figures to a client's facilities team.</p>
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="exportReconciledData()"><span>⬇</span> Download Excel</button>
+      </div>
+    </div>
+
+    <div class="pdf-box" id="lockCard">
+      <!-- populated by renderLockCard() -->
+    </div>
+
     <div class="card">
       <div class="card-title">Periods in this report</div>
       <div id="exportPeriodList"><p style="font-size:13px;color:var(--muted)">No periods added yet.</p></div>
@@ -1419,8 +1461,12 @@ const ST = {
                       // sub-meter total in the mains reconciliation only.
   reportUnit: 'kL',   // unit LABEL shown throughout the report ('kL' or 'L').
                       // Purely a label — never converts the stored numbers.
-  obsScope: 'all'     // observation focus: 'all' (latest + cross-period context)
+  obsScope: 'all',    // observation focus: 'all' (latest + cross-period context)
                       // or a period index string to focus that period.
+  locked: false,      // report finalised/locked
+  lockedAt: null,     // ISO timestamp when finalised
+  lockChecksum: null, // data checksum captured at finalise time (tamper-evidence)
+  activeProjectId: null  // id of the launcher project currently loaded (session only)
 };
 let obsFilterActive = 'all';
 
@@ -1447,6 +1493,7 @@ function showPage(name) {
   if (name === 'metersetup')  renderMeterSetup();
   if (name === 'systems')     renderSystems();
   if (name === 'benchmarks')  renderBenchmarks();
+  if (name === 'project')     renderBrandingControls();
   window.scrollTo({top:0, behavior:'smooth'});
 }
 
@@ -2127,7 +2174,7 @@ function _renderReportInner(out) {
         <h1>${bn||'Hydraulic Services Tuning Report'}</h1>
         <h2>${addr||''}</h2>
       </div>
-      <img src="${COMPANY_LOGO_B64}" alt="Axis Services VIC" style="height:52px;background:#fff;border-radius:6px;padding:5px 10px;flex-shrink:0"/>
+      <img src="${activeBranding().logo}" alt="${activeBranding().name}" style="height:52px;background:#fff;border-radius:6px;padding:5px 10px;flex-shrink:0;object-fit:contain"/>
     </div>
     <div class="cover-meta">
       <div class="cover-meta-item"><div class="cmi-label">Prepared for</div><div class="cmi-value">${client||'—'}</div></div>
@@ -4857,6 +4904,7 @@ function renderExportPage(){
   const btn = document.getElementById('pdfBtn');
   if (btn) btn.disabled = !hasReport;
 
+  renderLockCard();
   const el = document.getElementById('exportPeriodList');
   if(!ST.periods.length){el.innerHTML='<p style="font-size:13px;color:var(--muted)">No periods added yet.</p>';return;}
   el.innerHTML = ST.periods.map((p,i)=>`
@@ -4864,6 +4912,145 @@ function renderExportPage(){
       <span class="period-badge">${p.revNo||String(i+1).padStart(2,'0')}</span>
       <div class="period-info"><strong>${p.label}</strong>${p.months.length} months · ${p.combined.reduce((s,v)=>s+v,0).toFixed(1)} kL total · issued ${p.issueDate}</div>
     </div>`).join('');
+}
+
+// ── Export reconciled data to an .xlsx workbook ───────────────────────────────
+function exportReconciledData() {
+  if (!ST.periods.length) { alert('No data to export. Add at least one period first.'); return; }
+  if (typeof XLSX === 'undefined') { alert('Spreadsheet library not available.'); return; }
+  const unit = unitLabel();
+  const wb = XLSX.utils.book_new();
+  const usedNames = {};
+  const safeSheetName = (raw) => {
+    let s = String(raw || 'Sheet').replace(/[\\\/\?\*\[\]:]/g, ' ').trim().slice(0, 28) || 'Sheet';
+    usedNames[s] = (usedNames[s] || 0) + 1;
+    if (usedNames[s] > 1) s = (s.slice(0, 25) + ' ' + usedNames[s]).slice(0, 31);
+    return s;
+  };
+
+  // ── Summary sheet ──
+  const summary = [
+    ['Hydraulic Services Tuning — Reconciled Data'],
+    ['Building', v('buildingName') || ''],
+    ['Generated', new Date().toLocaleString('en-AU')],
+    ['Units', unit],
+    [],
+    ['Period', 'Months', `Combined sub-meters (${unit})`, `Mains reading (${unit})`, '% accounted', `Unaccounted (${unit})`]
+  ];
+  ST.periods.forEach(p => {
+    const rec = mainsReconciliation(p);
+    summary.push([
+      p.label,
+      p.months.length,
+      +sumArr(p.combined).toFixed(2),
+      rec ? +rec.mainsTotal.toFixed(2) : '',
+      rec ? +rec.pctAccounted.toFixed(1) : '',
+      rec ? +rec.diff.toFixed(2) : ''
+    ]);
+  });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summary), 'Summary');
+
+  // ── One sheet per period ──
+  ST.periods.forEach(p => {
+    const keys = meterKeysOf(p);
+    const mainsKeys = (typeof mainsMeterKeysOf === 'function') ? mainsMeterKeysOf(p) : [];
+    const header = ['Meter', 'Type', ...p.months, `Total (${unit})`];
+    const rows = [header];
+
+    keys.forEach(k => {
+      const vals = (p.series[k] || []).map(x => +(+x).toFixed(2));
+      rows.push([labelFor(k), 'Sub-meter', ...vals, +sumArr(p.series[k]).toFixed(2)]);
+    });
+    // Combined active sub-meters
+    rows.push([`Combined (active sub-meters)`, 'Combined', ...p.combined.map(x => +x.toFixed(2)), +sumArr(p.combined).toFixed(2)]);
+
+    // Mains meters (shown separately — not part of combined)
+    mainsKeys.forEach(k => {
+      const vals = (p.series[k] || []).map(x => +(+x).toFixed(2));
+      rows.push([labelFor(k), 'Mains', ...vals, +sumArr(p.series[k]).toFixed(2)]);
+    });
+
+    // Reconciliation footer
+    const rec = mainsReconciliation(p);
+    if (rec) {
+      rows.push([]);
+      rows.push(['Mains reading total', '', ...Array(p.months.length).fill(''), +rec.mainsTotal.toFixed(2)]);
+      rows.push(['Sub-meter total', '', ...Array(p.months.length).fill(''), +rec.subTotal.toFixed(2)]);
+      rows.push(['Difference (unaccounted)', '', ...Array(p.months.length).fill(''), +rec.diff.toFixed(2)]);
+      rows.push(['% accounted', '', ...Array(p.months.length).fill(''), +rec.pctAccounted.toFixed(1)]);
+    }
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), safeSheetName(p.label));
+  });
+
+  const base = (v('pdfFilename') || v('buildingName') || 'Hydraulic-Tuning')
+    .replace(/[^a-zA-Z0-9\-_ ]/g, '').trim().replace(/\s+/g, '-') || 'Hydraulic-Tuning';
+  XLSX.writeFile(wb, `${base}_reconciled-data.xlsx`);
+}
+
+// ── Finalise / lock + document checksum ───────────────────────────────────────
+// Finalising records a checksum ("Document ID") of the current project data and
+// stamps it on the PDF footer, so an exported/printed copy can be tied back to an
+// unaltered source. If the data later changes, the current checksum no longer
+// matches the stored one — surfaced as "modified since finalised".
+function computeProjectChecksum() {
+  const snap = collectSnapshot();
+  const clone = { ...snap };
+  delete clone._saved;          // changes on every save — not part of the content
+  delete clone.locked;
+  delete clone.lockedAt;
+  delete clone.lockChecksum;
+  return hashString(JSON.stringify(clone)).toUpperCase();
+}
+
+function finalizeReport() {
+  if (!ST.periods.length) { alert('Add at least one reporting period before finalising.'); return; }
+  if (!confirm('Finalise and lock this report?\n\nThis records a Document ID (a checksum of the current data) and stamps it on the PDF footer. You can unlock again at any time to make changes.')) return;
+  ST.lockChecksum = computeProjectChecksum();
+  ST.locked = true;
+  ST.lockedAt = new Date().toISOString();
+  renderLockCard();
+  renderLockBanner();
+}
+
+function unlockReport() {
+  if (!confirm('Unlock this report for editing?\n\nThe finalised Document ID will be cleared. Re-finalise when you are done.')) return;
+  ST.locked = false;
+  ST.lockedAt = null;
+  ST.lockChecksum = null;
+  renderLockCard();
+  renderLockBanner();
+}
+
+function renderLockCard() {
+  const el = document.getElementById('lockCard');
+  if (!el) return;
+  const codeStyle = 'font-family:monospace;background:var(--grey);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-weight:700';
+  const current = computeProjectChecksum();
+  if (ST.locked) {
+    const when = ST.lockedAt ? new Date(ST.lockedAt).toLocaleString('en-AU') : '';
+    const modified = ST.lockChecksum && current !== ST.lockChecksum;
+    el.innerHTML = `
+      <h3>Report status: <span style="color:var(--teal-d)">🔒 Finalised</span></h3>
+      <p>Finalised ${when}. Document ID <code style="${codeStyle}">${ST.lockChecksum}</code> is stamped on the PDF footer so an exported copy can be verified against this data.</p>
+      ${modified ? `<div style="background:var(--amber-l);border:1px solid #f0c675;color:#7c4a03;border-radius:8px;padding:10px 12px;font-size:12.5px;margin-bottom:10px">⚠️ The data has changed since finalising (the current ID is <code style="${codeStyle}">${current}</code>). Re-finalise to update the stamped Document ID.</div>` : ''}
+      <div class="btn-row">
+        <button class="btn btn-secondary" onclick="unlockReport()">Unlock for editing</button>
+        ${modified ? `<button class="btn btn-primary" onclick="finalizeReport()">Re-finalise</button>` : ''}
+      </div>`;
+  } else {
+    el.innerHTML = `
+      <h3>Report status: <span style="color:var(--muted)">Draft</span></h3>
+      <p>Finalising records a Document ID (a checksum of the current data) and stamps it on the PDF footer as tamper-evidence. The current data ID is <code style="${codeStyle}">${current}</code>.</p>
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="finalizeReport()">🔒 Finalise &amp; lock</button>
+      </div>`;
+  }
+}
+
+function renderLockBanner() {
+  const el = document.getElementById('lockIndicator');
+  if (el) el.innerHTML = ST.locked ? '<span style="color:#34d399;font-weight:700">🔒 FINALISED</span>' : '';
+  renderLockCard();
 }
 
 // ─── Period editor ────────────────────────────────────────────────────────────
@@ -5087,6 +5274,9 @@ function collectSnapshot() {
     nonReconMeters: ST.nonReconMeters,
     reportUnit: ST.reportUnit,
     obsScope: ST.obsScope,
+    locked: ST.locked,
+    lockedAt: ST.lockedAt,
+    lockChecksum: ST.lockChecksum,
     colMap: colMapSafe,
     fields: {
       buildingName:    v('buildingName'),
@@ -5129,6 +5319,9 @@ function applySnapshot(snap) {
   ST.nonReconMeters = snap.nonReconMeters || [];
   ST.reportUnit = snap.reportUnit || 'kL';
   ST.obsScope = snap.obsScope || 'all';
+  ST.locked = !!snap.locked;
+  ST.lockedAt = snap.lockedAt || null;
+  ST.lockChecksum = snap.lockChecksum || null;
 
   // Restore periods — ensure excludedMeters arrays survive round-trip
   ST.periods = (snap.periods || []).map(p => ({
@@ -5164,6 +5357,205 @@ function applySnapshot(snap) {
   renderSystems();
   renderRevisions();
   updatePeriodBanner();
+  renderLockBanner();
+}
+
+// ── Multi-project launcher ────────────────────────────────────────────────────
+// Keeps several named projects (one per building/client) in this browser so you
+// can jump between them without juggling .htpj files. Stored under htp_projects
+// as { id: {id, name, savedAt, snap} }. Never holds the API key (it lives under
+// its own localStorage key and is not part of a snapshot).
+const PROJECTS_KEY = 'htp_projects';
+
+function readProjects() {
+  try { const o = JSON.parse(localStorage.getItem(PROJECTS_KEY) || '{}'); return (o && typeof o === 'object') ? o : {}; }
+  catch(_) { return {}; }
+}
+function writeProjects(map) {
+  try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(map)); return true; }
+  catch(_) { return false; }
+}
+function currentProjectName() {
+  return (v('buildingName') || '').trim() || 'Untitled project';
+}
+
+function saveCurrentAsProject() {
+  const suggested = currentProjectName();
+  const name = (prompt('Save current work as a project named:', suggested) || '').trim();
+  if (!name) return;
+  const map = readProjects();
+  // Reuse an existing id if the name matches (update in place), else new id.
+  let id = Object.keys(map).find(k => (map[k].name || '').toLowerCase() === name.toLowerCase());
+  if (id && !confirm(`A project called "${name}" already exists. Overwrite it with the current data?`)) return;
+  id = id || ('proj_' + Date.now().toString(36));
+  map[id] = { id, name, savedAt: new Date().toISOString(), snap: collectSnapshot() };
+  if (!writeProjects(map)) { alert('Could not save — browser storage is full. Save a project file instead.'); return; }
+  ST.activeProjectId = id;
+  openProjectLauncher();   // refresh the list
+}
+
+function updateProject(id) {
+  const map = readProjects();
+  if (!map[id]) return;
+  if (!confirm(`Overwrite "${map[id].name}" with the current data?`)) return;
+  map[id] = { ...map[id], savedAt: new Date().toISOString(), snap: collectSnapshot() };
+  writeProjects(map);
+  ST.activeProjectId = id;
+  openProjectLauncher();
+}
+
+function openProject(id) {
+  const map = readProjects();
+  const proj = map[id];
+  if (!proj) return;
+  if (!confirm(`Open "${proj.name}"?\n\nThis replaces your current unsaved work — save it as a project first if you need it.`)) return;
+  try {
+    applySnapshot(proj.snap);
+    ST.activeProjectId = id;
+    const ov = document.getElementById('projectModalOverlay'); if (ov) ov.remove();
+    setLastSaved(`Opened project: ${proj.name}`);
+    showPage('report');
+    if (ST.periods.length) generateReport();
+  } catch(err) {
+    alert('That project could not be opened:\n\n' + err.message);
+  }
+}
+
+function deleteProject(id) {
+  const map = readProjects();
+  if (!map[id]) return;
+  if (!confirm(`Delete the saved project "${map[id].name}"?\n\nThis only removes it from this browser; any .htpj file you exported is unaffected.`)) return;
+  delete map[id];
+  writeProjects(map);
+  if (ST.activeProjectId === id) ST.activeProjectId = null;
+  openProjectLauncher();
+}
+
+function openProjectLauncher() {
+  const old = document.getElementById('projectModalOverlay');
+  if (old) old.remove();
+  const map = readProjects();
+  const list = Object.values(map).sort((a,b) => (b.savedAt||'').localeCompare(a.savedAt||''));
+
+  const rows = list.length ? list.map(p => {
+    const when = p.savedAt ? new Date(p.savedAt).toLocaleString('en-AU') : 'unknown';
+    const np = (p.snap && p.snap.periods || []).length;
+    const ns = (p.snap && p.snap.systems || []).length;
+    const active = p.id === ST.activeProjectId;
+    return `<div class="bk-row">
+      <div class="bk-meta">
+        <div class="bk-when">${active ? '<span class="bk-latest">OPEN</span>' : ''}${escapeHtml(p.name)}</div>
+        <div class="bk-sub">${np} period(s), ${ns} system(s) · saved ${when}</div>
+      </div>
+      <div style="display:flex;gap:6px;flex-shrink:0">
+        <button class="btn btn-primary btn-sm" onclick="openProject('${p.id}')">Open</button>
+        <button class="btn btn-secondary btn-sm" onclick="updateProject('${p.id}')" title="Overwrite with current data">Update</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteProject('${p.id}')">Delete</button>
+      </div>
+    </div>`;
+  }).join('') : `<p class="bk-note">No saved projects yet. Click "Save current as project" to store this building here.</p>`;
+
+  const html = `<div id="projectModalOverlay" class="bk-overlay" onclick="if(event.target===this)this.remove()">
+    <div class="bk-modal">
+      <div class="bk-head">Recent projects
+        <button class="bk-close" onclick="document.getElementById('projectModalOverlay').remove()">&times;</button>
+      </div>
+      <div class="bk-body">
+        <p class="bk-note">Projects saved in this browser. Each is a full snapshot of a building/client — open one to switch to it. Opening replaces your current unsaved work.</p>
+        ${rows}
+      </div>
+      <div class="iv-foot">
+        <button class="btn btn-primary" onclick="saveCurrentAsProject()">+ Save current as project</button>
+      </div>
+    </div></div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+// ── Branding / letterhead presets ─────────────────────────────────────────────
+// The active logo (used on the report cover and PDF) can be switched between the
+// built-in default and any presets the user uploads. Stored under htp_branding as
+// { active, presets:[{id,name,logo,ar}] }. Kept in the browser, not in the .htpj.
+const BRANDING_KEY = 'htp_branding';
+const DEFAULT_BRANDING = { id:'default', name:'Axis Services VIC (default)', logo:COMPANY_LOGO_B64, ar:COMPANY_LOGO_AR };
+
+function readBranding() {
+  try { const o = JSON.parse(localStorage.getItem(BRANDING_KEY) || '{}'); if (o && typeof o === 'object') return o; }
+  catch(_) {}
+  return { active:'default', presets:[] };
+}
+function writeBranding(b) { try { localStorage.setItem(BRANDING_KEY, JSON.stringify(b)); return true; } catch(_) { return false; } }
+
+function allBrandingPresets() { return [DEFAULT_BRANDING, ...(readBranding().presets || [])]; }
+
+function activeBranding() {
+  const b = readBranding();
+  return allBrandingPresets().find(p => p.id === b.active) || DEFAULT_BRANDING;
+}
+
+function logoFormatFromDataUrl(url) {
+  const m = /^data:image\/(png|jpeg|jpg|webp)/i.exec(url || '');
+  const t = (m && m[1] || 'jpeg').toLowerCase();
+  return t === 'png' ? 'PNG' : t === 'webp' ? 'WEBP' : 'JPEG';
+}
+
+function setActiveBranding(id) {
+  const b = readBranding();
+  b.active = id;
+  writeBranding(b);
+  renderBrandingControls();
+}
+
+function addBrandingPreset(input) {
+  const file = input.files && input.files[0];
+  input.value = '';
+  if (!file) return;
+  if (file.size > 1.5 * 1024 * 1024) { alert('Please use a logo under 1.5 MB.'); return; }
+  const reader = new FileReader();
+  reader.onload = e => {
+    const dataUrl = e.target.result;
+    const img = new Image();
+    img.onload = () => {
+      const name = (prompt('Name this branding preset:', file.name.replace(/\.[^.]+$/, '')) || '').trim();
+      if (!name) return;
+      const ar = (img.naturalHeight > 0) ? img.naturalWidth / img.naturalHeight : 1;
+      const b = readBranding();
+      const preset = { id:'brand_'+Date.now().toString(36), name, logo:dataUrl, ar };
+      b.presets = [...(b.presets || []), preset];
+      b.active = preset.id;
+      if (!writeBranding(b)) { alert('Could not save the logo — browser storage may be full.'); return; }
+      renderBrandingControls();
+    };
+    img.onerror = () => alert('That image could not be read. Try a PNG or JPEG.');
+    img.src = dataUrl;
+  };
+  reader.readAsDataURL(file);
+}
+
+function deleteActiveBranding() {
+  const b = readBranding();
+  if (b.active === 'default') { alert('The default branding cannot be removed.'); return; }
+  const preset = (b.presets || []).find(p => p.id === b.active);
+  if (!preset) return;
+  if (!confirm(`Remove the branding preset "${preset.name}"?`)) return;
+  b.presets = (b.presets || []).filter(p => p.id !== b.active);
+  b.active = 'default';
+  writeBranding(b);
+  renderBrandingControls();
+}
+
+function renderBrandingControls() {
+  const sel = document.getElementById('brandingSelect');
+  if (!sel) return;
+  const active = readBranding().active || 'default';
+  sel.innerHTML = allBrandingPresets().map(p =>
+    `<option value="${p.id}" ${p.id===active?'selected':''}>${escapeHtml(p.name)}</option>`).join('');
+  const delBtn = document.getElementById('brandingDeleteBtn');
+  if (delBtn) delBtn.style.display = (active === 'default') ? 'none' : 'inline-flex';
+  const prev = document.getElementById('brandingPreview');
+  if (prev) {
+    const a = activeBranding();
+    prev.innerHTML = `<img src="${a.logo}" alt="${escapeHtml(a.name)}" style="max-height:48px;max-width:160px;object-fit:contain"/>`;
+  }
 }
 
 // ── File-based save (downloads a .htpj file) ──────────────────────────────────
@@ -5542,6 +5934,10 @@ async function generatePDF(){
   btn.disabled=true; prog.style.display='block';
   function p(pct,msg){fill.style.width=pct+'%';stat.textContent=msg;}
 
+  // Document ID + status stamped in the footer (finalise/lock feature).
+  const _pdfDocId  = ST.lockChecksum || computeProjectChecksum();
+  const _pdfStatus = ST.locked ? 'FINAL' : 'DRAFT';
+
   try{
     const {jsPDF}=window.jspdf;
     const rawName=document.getElementById('pdfFilename').value.trim()||'Hydraulic-Tuning-Report';
@@ -5647,7 +6043,7 @@ async function generatePDF(){
       sfill(GREY);doc.rect(0,_ph-9,_pw,9,'F');
       sf('normal',FS.label);stxt(GREY_T);
       const today=new Date().toLocaleDateString('en-AU',{day:'2-digit',month:'short',year:'numeric'});
-      doc.text(`Generated ${today} | Confidential`,ML,_ph-3.5);
+      doc.text(`Generated ${today} | ${_pdfStatus} | Doc ID ${_pdfDocId} | Confidential`,ML,_ph-3.5);
       doc.text(`Page ${doc.internal.getCurrentPageInfo().pageNumber}`,_pw-MR,_ph-3.5,{align:'right'});
     }
 
@@ -5728,13 +6124,14 @@ async function generatePDF(){
     // ── COVER PAGE ────────────────────────────────────────────────────────────
     p(5,'Building cover…'); chrome(); y=20;
 
-    // Company logo — centred in the upper portion of the cover
+    // Company logo — centred in the upper portion of the cover (active branding)
     try {
+      const brand = activeBranding();
       const logoW = 75;                          // mm wide
-      const logoH = logoW / COMPANY_LOGO_AR;     // preserve aspect ratio (~41.5mm)
+      const logoH = logoW / (brand.ar || COMPANY_LOGO_AR);   // preserve aspect ratio
       const logoX = ML + (CW - logoW) / 2;       // horizontally centred
       const logoY = 42;                          // upper portion of the page
-      doc.addImage(COMPANY_LOGO_B64, 'JPEG', logoX, logoY, logoW, logoH);
+      doc.addImage(brand.logo, logoFormatFromDataUrl(brand.logo), logoX, logoY, logoW, logoH);
     } catch(e) { /* logo unavailable — continue without it */ }
 
     // Title banner — lower portion of the cover
@@ -6668,6 +7065,10 @@ async function generatePDF(){
     console.error(err);btn.disabled=false;
   }
 }
+
+// ─── Initial render of browser-stored UI (branding + lock state) ─────────────
+renderBrandingControls();
+renderLockBanner();
 </script>
 </body>
 </html>
