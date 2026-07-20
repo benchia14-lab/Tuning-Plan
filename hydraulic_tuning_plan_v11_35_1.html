@@ -382,6 +382,28 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 .iv-error{background:#fef2f2;border:1px solid #fca5a5;color:#7f1d1d}
 .iv-warn{background:var(--amber-l);border:1px solid #f0c675;color:#7c4a03}
 .iv-foot{display:flex;justify-content:flex-end;gap:10px;padding:14px 20px;border-top:1px solid var(--border);flex-wrap:wrap}
+
+/* Leak & anomaly panel */
+.leak-card{background:#fff;border:1px solid var(--border);border-radius:10px;padding:0;margin-bottom:14px;overflow:hidden}
+.leak-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;padding:12px 16px;background:#0f2b23;color:#fff;flex-wrap:wrap}
+.leak-head>span:first-child{font-size:13px;font-weight:700}
+.leak-sub{font-size:10.5px;color:#9fd8c4;font-weight:600}
+.leak-none{padding:14px 16px;font-size:12.5px;color:var(--teal-d);line-height:1.5;background:var(--teal-l)}
+.leak-list{padding:6px 0}
+.leak-row{display:flex;gap:11px;align-items:flex-start;padding:11px 16px;border-bottom:1px solid #f0ede8}
+.leak-row:last-child{border-bottom:none}
+.leak-ico{font-size:16px;flex-shrink:0;line-height:1.3}
+.leak-body{flex:1;min-width:0}
+.leak-meter{font-size:13px;font-weight:700;color:var(--text);display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:3px}
+.leak-tag{font-size:10px;font-weight:700;background:var(--grey);color:var(--muted);padding:2px 8px;border-radius:10px;text-transform:uppercase;letter-spacing:0.03em}
+.leak-sev{font-size:9px;font-weight:800;padding:2px 7px;border-radius:10px;text-transform:uppercase;letter-spacing:0.04em}
+.leak-sev-high{background:#fef2f2;color:#b91c1c}
+.leak-sev-medium{background:var(--amber-l);color:#92400e}
+.leak-detail{font-size:12px;color:var(--muted);line-height:1.5}
+.leak-row.leak-high{background:#fffafa}
+.leak-add{flex-shrink:0;white-space:nowrap}
+.leak-foot{display:flex;align-items:center;gap:12px;padding:11px 16px;border-top:1px solid var(--border);background:var(--grey);flex-wrap:wrap}
+.leak-hint{font-size:11px;color:var(--muted)}
 </style>
 </head>
 <body>
@@ -677,6 +699,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 
     <!-- Focus period selector (only shown when >1 period) -->
     <div class="obs-scope-bar" id="obsScopeControl"></div>
+
+    <!-- Rule-based leak & anomaly detection (instant, no API needed) -->
+    <div id="leakPanel"></div>
 
     <!-- AI analysis settings -->
     <div class="card" id="aiKeyCard" style="padding:14px 16px;margin-bottom:14px">
@@ -3781,6 +3806,105 @@ function renderMeterSetup() {
 }
 
 
+// ─── Rule-based leak & anomaly detection ─────────────────────────────────────
+// Pure and instant (no API). Scans a period's per-meter monthly series for
+// common water-leak / anomaly signatures and returns ranked findings. Feeds
+// both the on-screen Leak panel and the narrative observations.
+const LEAK_SIG = {
+  'continuous-baseflow': { icon:'💧', label:'Continuous baseflow' },
+  'sustained-step-up':   { icon:'📈', label:'Sustained step-up' },
+  'statistical-spike':   { icon:'⚡', label:'Statistical spike' },
+  'monotonic-creep':     { icon:'↗',  label:'Upward creep' },
+  'mains-unaccounted':   { icon:'🚰', label:'Unaccounted mains water' },
+};
+
+function detectAnomalies(period) {
+  const findings = [];
+  if (!period) return findings;
+  const keys = meterKeysOf(period);
+  const months = period.months || [];
+  const unit = unitLabel();
+
+  keys.forEach(c => {
+    const vals = (period.series[c] || []).map(x => +x || 0);
+    const n = vals.length;
+    if (n < 2) return;
+    const total = vals.reduce((s,v)=>s+v,0);
+    const mean = total / n;
+    if (mean < 1) return;                       // ignore tiny/dead meters (noise)
+    const min = Math.min(...vals);
+    const max = Math.max(...vals);
+    const sd  = Math.sqrt(vals.reduce((s,v)=>s+(v-mean)**2,0)/n);
+
+    // 1. Continuous baseflow — usage never rests near zero.
+    if (min > 0 && min >= 0.6 * mean && max > 0) {
+      const pct = min / mean * 100;
+      findings.push({ meter:c, signature:'continuous-baseflow',
+        severity: min >= 0.8*mean ? 'high':'medium', metric: pct,
+        detail:`never drops below ${min.toFixed(1)} ${unit} (${pct.toFixed(0)}% of its ${mean.toFixed(1)} ${unit} monthly average) — a persistent baseflow that never rests, a classic continuous-leak signature (running cistern, passing valve, or constant unmetered draw).` });
+    }
+
+    // 2. Sustained step-up — usage steps to a higher level and stays there.
+    if (n >= 4) {
+      const half = Math.floor(n/2);
+      const early = vals.slice(0, n-half), late = vals.slice(n-half);
+      const em = early.reduce((s,v)=>s+v,0)/early.length;
+      const lm = late.reduce((s,v)=>s+v,0)/late.length;
+      if (em > 0 && lm >= em*1.4 && late.every(v => v > em*1.1)) {
+        const jump = (lm-em)/em*100;
+        findings.push({ meter:c, signature:'sustained-step-up',
+          severity: jump >= 80 ? 'high':'medium', metric: jump,
+          detail:`stepped up from about ${em.toFixed(1)} to ${lm.toFixed(1)} ${unit}/month (+${jump.toFixed(0)}%) and stayed elevated across the last ${late.length} months — consistent with a leak or fault that began mid-period and has not resolved.` });
+      }
+    }
+
+    // 3. Statistical spike — a month far beyond the meter's own spread.
+    if (sd > 0) {
+      let worst = null;
+      vals.forEach((v,i) => { const z=(v-mean)/sd; if (z>=2.5 && (!worst||z>worst.z)) worst={i,v,z}; });
+      if (worst) {
+        findings.push({ meter:c, signature:'statistical-spike',
+          severity: worst.z >= 3.5 ? 'high':'medium', metric: worst.z,
+          detail:`spiked to ${worst.v.toFixed(1)} ${unit} in ${months[worst.i]||('month '+(worst.i+1))} — ${worst.z.toFixed(1)} standard deviations above its own average, a strong single-month outlier worth checking against field readings and site events.` });
+      }
+    }
+
+    // 4. Monotonic creep — a run of consecutive monthly increases.
+    if (n >= 4) {
+      let run=1, best=1, start=0, bestStart=0;
+      for (let i=1;i<n;i++){
+        if (vals[i] > vals[i-1]) { run++; if (run>best){best=run;bestStart=start;} }
+        else { run=1; start=i; }
+      }
+      if (best >= 4) {
+        const from = vals[bestStart], to = vals[bestStart+best-1];
+        const rise = from>0 ? (to-from)/from*100 : 0;
+        findings.push({ meter:c, signature:'monotonic-creep',
+          severity: rise >= 60 ? 'high':'medium', metric: best,
+          detail:`rose for ${best} consecutive months (${months[bestStart]||'start'} → ${months[bestStart+best-1]||'end'}, ${from.toFixed(1)} → ${to.toFixed(1)} ${unit}${rise>0?`, +${rise.toFixed(0)}%`:''}) — a steady upward creep that can indicate a slowly worsening leak or degrading fixture.` });
+      }
+    }
+  });
+
+  // 5. System-level — mains reconciliation shortfall (unaccounted water).
+  const rec = mainsReconciliation(period);
+  if (rec && rec.mainsTotal > 0 && rec.diff > 0 && rec.pctAccounted < 90) {
+    findings.push({ meter:'(whole building)', signature:'mains-unaccounted',
+      severity: rec.pctAccounted < 75 ? 'high':'medium', metric: 100-rec.pctAccounted,
+      detail:`sub-meters account for only ${rec.pctAccounted.toFixed(1)}% of the mains reading — ${rec.diff.toFixed(1)} ${unit} is unaccounted for across the period. Unaccounted mains water is a primary leak indicator (buried or unmetered leaks, or missing sub-meters).` });
+  }
+
+  const sevRank = { high:0, medium:1, low:2 };
+  findings.sort((a,b) => (sevRank[a.severity]-sevRank[b.severity]) || (b.metric-a.metric));
+  return findings;
+}
+
+// Subject + detail as a single sentence, for observation text.
+function describeFinding(f) {
+  const subject = f.meter === '(whole building)' ? 'The whole-building mains reconciliation shows' : `Meter "${f.meter}"`;
+  return `${subject} ${f.detail}`;
+}
+
 // ─── Section 6 — Observations engine ─────────────────────────────────────────
 
 function generateComprehensiveObservations(focusPeriodIndex) {
@@ -3840,6 +3964,21 @@ function generateComprehensiveObservations(focusPeriodIndex) {
         type: variance > 15 ? 'warn' : variance < -10 ? 'good' : 'info',
         source: 'Benchmark vs actual',
         text: `The annualised consumption rate of ${annualised.toFixed(0)} kL/yr is ${Math.abs(variance).toFixed(1)}% ${variance >= 0 ? 'above' : 'below'} the combined benchmark target of ${totalAnnualBenchmark.toLocaleString()} kL across all benchmark groups. ${variance > 15 ? 'Immediate review of the highest-volume systems is recommended to identify leaks, excessive draw-off or equipment faults driving the overshoot.' : variance < -10 ? 'Verify no meters are offline or under-reporting before attributing the saving to tuning interventions.' : 'The building is tracking to budget at the current rate of use.'}`
+      });
+    }
+  }
+
+  // ── 2b. Leak & anomaly detection (rule-based, consolidated) ───────────────
+  {
+    const findings = detectAnomalies(latestP);
+    if (findings.length) {
+      const highN = findings.filter(f => f.severity === 'high').length;
+      const named = findings.slice(0, 5).map(f =>
+        `${f.meter === '(whole building)' ? 'the building mains' : `"${f.meter}"`} (${(LEAK_SIG[f.signature]||{}).label || f.signature})`);
+      obs.push({
+        type: 'warn',
+        source: 'Leak & anomaly detection',
+        text: `Automated leak/anomaly screening of ${latestP.label} flagged ${findings.length} signal${findings.length>1?'s':''}${highN?`, ${highN} high-priority`:''}: ${fmtList(named)}${findings.length>5?`, plus ${findings.length-5} more`:''}. In particular, ${describeFinding(findings[0]).charAt(0).toLowerCase()+describeFinding(findings[0]).slice(1)} These are heuristic indicators for field verification rather than confirmed leaks — prioritise the high-severity meters for on-site leak checks and meter calibration.`
       });
     }
   }
@@ -4043,6 +4182,7 @@ function renderSection6() {
   renderObsScopeControl();
   renderS6Stats();
   renderS6DataPanel();
+  renderLeakPanel();
   renderObsCards();
 }
 
@@ -4080,6 +4220,100 @@ function regenObservations(silent) {
   const customs = ST.observations.filter(o => o.isCustom);
   ST.observations = [...generated, ...customs];
   if (!silent) { renderObsScopeControl(); renderObsCards(); }
+}
+
+// ─── Leak & anomaly panel (Observations page) ────────────────────────────────
+function leakFocusPeriod() {
+  const scope = ST.obsScope || 'all';
+  const parsed = parseInt(scope, 10);
+  const fIdx = (scope === 'all' || isNaN(parsed)) ? ST.periods.length - 1 : parsed;
+  return ST.periods[fIdx] || null;
+}
+
+function renderLeakPanel() {
+  const el = document.getElementById('leakPanel');
+  if (!el) return;
+  const period = leakFocusPeriod();
+  if (!period) { el.innerHTML = ''; return; }
+
+  const findings = detectAnomalies(period);
+  window.__leakFindings = findings;
+  window.__leakPeriodLabel = period.label;
+
+  if (!findings.length) {
+    el.innerHTML = `<div class="leak-card leak-clear">
+      <div class="leak-head"><span>🔎 Leak &amp; anomaly detection</span>
+        <span class="leak-sub">${escapeHtml(period.label)} · instant, no API</span></div>
+      <div class="leak-none">✓ No leak or anomaly signatures detected in ${escapeHtml(period.label)}. Every meter is scanned automatically for continuous baseflow, sustained step-ups, statistical spikes, upward creep, and unaccounted mains water.</div>
+    </div>`;
+    return;
+  }
+
+  const highN = findings.filter(f => f.severity === 'high').length;
+  const rows = findings.map((f, i) => {
+    const meta = LEAK_SIG[f.signature] || { icon:'•', label:f.signature };
+    return `<div class="leak-row leak-${f.severity}">
+      <span class="leak-ico">${meta.icon}</span>
+      <div class="leak-body">
+        <div class="leak-meter">${escapeHtml(f.meter)}
+          <span class="leak-tag">${meta.label}</span>
+          <span class="leak-sev leak-sev-${f.severity}">${f.severity}</span></div>
+        <div class="leak-detail">${escapeHtml(f.detail)}</div>
+      </div>
+      <button class="btn btn-secondary btn-sm leak-add" onclick="addLeakObservation(${i})">+ Add</button>
+    </div>`;
+  }).join('');
+
+  el.innerHTML = `<div class="leak-card">
+    <div class="leak-head"><span>🔎 Leak &amp; anomaly detection</span>
+      <span class="leak-sub">${escapeHtml(period.label)} — ${findings.length} signal${findings.length>1?'s':''}${highN?`, ${highN} high`:''} · instant, no API</span></div>
+    <div class="leak-list">${rows}</div>
+    <div class="leak-foot">
+      <button class="btn btn-primary btn-sm" onclick="addAllLeakObservations()">+ Add all to observations</button>
+      <span class="leak-hint">Heuristic flags for field verification, not confirmed leaks.</span>
+    </div>
+  </div>`;
+}
+
+function leakFindingToObs(f, periodLabel) {
+  const meta = LEAK_SIG[f.signature] || { label:'Anomaly' };
+  return {
+    id: `leak_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
+    type: 'warn',
+    source: 'Leak/anomaly — ' + meta.label,
+    text: `${describeFinding(f)} (Flagged automatically in ${periodLabel}; verify on site before recording as a confirmed fault.)`,
+    notes: '', included: true, isCustom: true   // custom => survives Regenerate
+  };
+}
+
+function addLeakObservation(i) {
+  const f = (window.__leakFindings || [])[i];
+  if (!f) return;
+  const obs = leakFindingToObs(f, window.__leakPeriodLabel || '');
+  if (ST.observations.some(o => o.text === obs.text)) { flashLeakAdded(i, 'Already added'); return; }
+  ST.observations.push(obs);
+  renderObsCards();
+  flashLeakAdded(i, '✓ Added');
+}
+
+function addAllLeakObservations() {
+  let added = 0;
+  (window.__leakFindings || []).forEach(f => {
+    const obs = leakFindingToObs(f, window.__leakPeriodLabel || '');
+    if (!ST.observations.some(o => o.text === obs.text)) { ST.observations.push(obs); added++; }
+  });
+  renderObsCards();
+  const foot = document.querySelector('#leakPanel .leak-foot .leak-hint');
+  if (foot) foot.textContent = added ? `✓ Added ${added} observation${added>1?'s':''}. Review them in the list below.` : 'All findings are already in your observations.';
+}
+
+function flashLeakAdded(i, msg) {
+  const btns = document.querySelectorAll('#leakPanel .leak-add');
+  const btn = btns[i];
+  if (!btn) return;
+  const orig = btn.textContent;
+  btn.textContent = msg; btn.disabled = true;
+  setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 1500);
 }
 
 // ─── AI observations (Claude Fable 5) ─────────────────────────────────────────
