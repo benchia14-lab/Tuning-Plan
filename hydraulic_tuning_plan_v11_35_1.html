@@ -3871,9 +3871,13 @@ function membersInUse(excludeVmId) {
 // For a given period, compute the per-meter monthly series for a virtual meter
 // (sum of its member meters' values, month by month). Members missing from a
 // period contribute 0 for that period's months.
+// A member can be marked as a deduction (e.g. subtracting a metered draw-off to
+// derive an unmetered harvested/tank value). Deducted members are listed in
+// vm.negativeMembers and subtracted rather than added.
+function vmSignOf(vm, m){ return (vm.negativeMembers || []).includes(m) ? -1 : 1; }
 function virtualSeriesFor(vm, p) {
   const months = p.months || [];
-  return months.map((_, mi) => vm.members.reduce((s, m) => s + (parseFloat((p.series[m]||[])[mi]) || 0), 0));
+  return months.map((_, mi) => vm.members.reduce((s, m) => s + vmSignOf(vm, m) * (parseFloat((p.series[m]||[])[mi]) || 0), 0));
 }
 
 // The authoritative, report-facing meter list for a period: virtual meters
@@ -3994,10 +3998,24 @@ function toggleVmMember(id, member, checked) {
   const vm = ST.virtualMeters.find(x => x.id === id);
   if (!vm) return;
   if (checked) { if (!vm.members.includes(member)) vm.members.push(member); }
-  else { vm.members = vm.members.filter(m => m !== member); }
+  else {
+    vm.members = vm.members.filter(m => m !== member);
+    vm.negativeMembers = (vm.negativeMembers || []).filter(m => m !== member);  // drop sign too
+  }
   renderMeterSetup();
   // Keep systems page in sync whenever meter setup changes
   syncSystemsFromMeterSetup();
+}
+
+// Toggle a member between added (+) and deducted (−) within its virtual meter.
+function toggleVmMemberSign(id, member) {
+  const vm = ST.virtualMeters.find(x => x.id === id);
+  if (!vm || !vm.members.includes(member)) return;
+  vm.negativeMembers = vm.negativeMembers || [];
+  if (vm.negativeMembers.includes(member)) vm.negativeMembers = vm.negativeMembers.filter(m => m !== member);
+  else vm.negativeMembers.push(member);
+  renderMeterSetup();
+  renderReport_ifVisible();
 }
 
 // ─── Meter Set Up page rendering ───────────────────────────────────────────────
@@ -4327,12 +4345,32 @@ function renderMeterSetup() {
       vmList.innerHTML = '<p style="font-size:12px;color:var(--muted)">No virtual meters created yet. Use the form above to combine meters.</p>';
     } else {
       vmList.innerHTML = ST.virtualMeters.map(vm => {
-        const total = vm.members.reduce((s,m) => s + totalForKeyAcrossPeriods(m), 0);
-        const breakdown = vm.members.map(m => `${m} (${totalForKeyAcrossPeriods(m).toFixed(1)} kL)`).join(' + ');
+        const total = totalForKeyAcrossPeriods('__vm_' + vm.id);   // sign-aware total
+        const u = unitLabel();
+        const breakdown = vm.members.map((m, idx) => {
+          const neg = vmSignOf(vm, m) < 0;
+          const op = idx === 0 ? (neg ? '− ' : '') : (neg ? ' − ' : ' + ');
+          return `${op}${m} (${totalForKeyAcrossPeriods(m).toFixed(1)} ${u})`;
+        }).join('');
+        const signRows = vm.members.length ? `
+          <span class="sc-label" style="margin-top:8px">Add or deduct each member</span>
+          <div style="display:flex;flex-direction:column;gap:5px;margin-bottom:8px">
+            ${vm.members.map(m => {
+              const neg = vmSignOf(vm, m) < 0;
+              const style = neg
+                ? 'background:#fef2f2;border:1px solid #fca5a5;color:var(--red)'
+                : 'background:var(--teal-l);border:1px solid var(--teal);color:var(--teal-d)';
+              return `<div style="display:flex;align-items:center;gap:8px">
+                <button class="btn btn-sm" style="min-width:104px;font-weight:700;${style}" title="Click to switch between adding and deducting this meter" onclick="toggleVmMemberSign(${vm.id},'${m.replace(/'/g,"\\'")}')">${neg ? '− Deducted' : '+ Added'}</button>
+                <span style="font-size:12px">${m}</span>
+              </div>`;
+            }).join('')}
+          </div>
+          <div style="font-size:10.5px;color:var(--muted);margin-bottom:4px">Mark a meter as <strong>Deducted</strong> to subtract it — e.g. to derive an unmetered/harvested value by deducting one meter from another.</div>` : '';
         return `<div class="sys-card" style="margin-bottom:10px">
           <span class="sc-label">Virtual meter name</span>
           <input value="${vm.name||''}" oninput="updateVirtualMeter(${vm.id},'name',this.value)"/>
-          <span class="sc-label" style="margin-top:8px">Members (click to remove)</span>
+          <span class="sc-label" style="margin-top:8px">Members (tick to add/remove)</span>
           <div class="col-checklist" style="max-height:none;margin-bottom:8px">
             ${allRaw.map(m => `
               <label class="col-check-item${vm.members.includes(m)?' is-month':''}">
@@ -4340,7 +4378,8 @@ function renderMeterSetup() {
                 <span class="col-check-label" title="${m}">${m}</span>
               </label>`).join('')}
           </div>
-          <div style="font-size:11px;color:var(--muted);margin-top:8px">${vm.members.length} meter${vm.members.length!==1?'s':''} combined &middot; <strong>${total.toFixed(1)} kL</strong> total across all periods${vm.members.length?'<br>'+breakdown+' = '+total.toFixed(1)+' kL':''}<br><span style="color:var(--teal-d)">Benchmarks for this meter are set on the Benchmarks tab.</span></div>
+          ${signRows}
+          <div style="font-size:11px;color:var(--muted);margin-top:8px">${vm.members.length} meter${vm.members.length!==1?'s':''} combined &middot; <strong>${total.toFixed(1)} ${u}</strong> total across all periods${vm.members.length?'<br>'+breakdown+' = '+total.toFixed(1)+' '+u:''}<br><span style="color:var(--teal-d)">Benchmarks for this meter are set on the Benchmarks tab.</span></div>
           <div style="display:flex;margin-top:8px">
             <button class="btn btn-danger btn-sm" style="margin-left:auto" onclick="removeVirtualMeter(${vm.id})">Remove virtual meter</button>
           </div>
@@ -5017,15 +5056,18 @@ function buildMeterChartCard(row, i, unit, flags){
 
   let tableHtml;
   if (row.isVirtual && row.members && row.members.length){
-    // Highlight dominant member meters (the biggest, and any >=1.5x the member avg).
-    const memberTotals = row.members.map(m => ST.periods.reduce((s,p)=>s+sumArr(p.series[m]||[]),0));
+    // Signed contribution per member (deducted members subtract).
+    const vm = ST.virtualMeters.find(x => '__vm_' + x.id === row.key);
+    const signOf = m => vm ? vmSignOf(vm, m) : 1;
+    const memberTotals = row.members.map(m => signOf(m) * ST.periods.reduce((s,p)=>s+sumArr(p.series[m]||[]),0));
     const memMean = memberTotals.length ? memberTotals.reduce((s,v)=>s+v,0)/memberTotals.length : 0;
     const memMax = Math.max(0, ...memberTotals);
     const memberRows = row.members.map((m, mi) => {
-      const per = ST.periods.map(p => sumArr(p.series[m]||[]));
+      const neg = signOf(m) < 0;
+      const per = ST.periods.map(p => signOf(m) * sumArr(p.series[m]||[]));
       const mTot = memberTotals[mi];
       const hi = row.members.length > 1 && mTot > 0 && (mTot === memMax || mTot >= 1.5 * memMean);
-      const tag = hi ? ' <span class="hi-tag">high</span>' : '';
+      const tag = neg ? ' <span class="hi-tag" style="background:var(--red)">deducted</span>' : (hi ? ' <span class="hi-tag">high</span>' : '');
       return `<tr class="${hi?'high-usage-row':''}"><td>${escapeHtml(m)}${tag}</td>${per.map(v=>`<td class="right">${dv(v)}</td>`).join('')}<td class="right"><strong>${dv(mTot)}</strong></td></tr>`;
     }).join('');
     tableHtml = `<table class="data-tbl">
@@ -5070,11 +5112,15 @@ function instantiateMeterChart(row, i){
   const labels = ST.periods.map(p => p.label);
   let datasets;
   if (row.isVirtual && row.members && row.members.length){
-    datasets = row.members.map((m, mi) => ({
-      label: m,
-      data: ST.periods.map(p => +sumArr(p.series[m]||[]).toFixed(2)),
-      backgroundColor: COLORS[mi % COLORS.length]
-    }));
+    const vm = ST.virtualMeters.find(x => '__vm_' + x.id === row.key);
+    datasets = row.members.map((m, mi) => {
+      const sgn = vm ? vmSignOf(vm, m) : 1;
+      return {
+        label: (sgn < 0 ? '− ' : '') + m,
+        data: ST.periods.map(p => +(sgn * sumArr(p.series[m]||[])).toFixed(2)),
+        backgroundColor: COLORS[mi % COLORS.length]
+      };
+    });
   } else {
     datasets = [{
       label: row.label,
