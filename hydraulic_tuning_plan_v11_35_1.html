@@ -411,6 +411,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 .raw-mode-interval{background:var(--blue-l);color:var(--blue)}
 .raw-mode-cumulative{background:#ede9fe;color:#7c3aed}
 .raw-warn{background:var(--amber-l);border:1px solid #f0c675;color:#7c4a03;border-radius:8px;padding:9px 12px;font-size:12px;margin-top:10px;line-height:1.5}
+
+/* Charts tab — higher-usage highlighting */
+.meter-block.high-usage{border-color:#d4820a;box-shadow:0 0 0 2px rgba(212,130,10,0.14)}
+.mh-high{font-size:10px;font-weight:700;background:#d4820a;color:#fff;padding:2px 8px;border-radius:10px;letter-spacing:0.03em}
+.hi-tag{font-size:9px;font-weight:700;background:#d4820a;color:#fff;padding:1px 6px;border-radius:8px;letter-spacing:0.03em}
+.data-tbl tr.high-usage-row td{background:var(--amber-l)!important}
+.data-tbl tr.high-usage-row td:first-child{box-shadow:inset 3px 0 0 #d4820a}
 </style>
 </head>
 <body>
@@ -4979,11 +4986,24 @@ function renderChartsPage(){
   const rows = effectiveMeterRowsCombined();
   window.__chartRows = rows;
   const unit = unitLabel();
-  el.innerHTML = rows.map((row, i) => buildMeterChartCard(row, i, unit)).join('');
+
+  // Flag higher-usage systems: the biggest consumer, and any meter using
+  // notably more than the typical meter (>= 1.5x the average total).
+  const totalsArr = rows.map(r => r.perPeriod.reduce((s,pp) => s + sumArr(pp.vals), 0));
+  const meanTotal = totalsArr.length ? totalsArr.reduce((s,v)=>s+v,0) / totalsArr.length : 0;
+  const maxTotal = Math.max(0, ...totalsArr);
+
+  el.innerHTML = rows.map((row, i) => {
+    const total = totalsArr[i];
+    const isTop = rows.length > 1 && total > 0 && total === maxTotal;
+    const highUsage = rows.length > 1 && total > 0 && total >= 1.5 * meanTotal;
+    return buildMeterChartCard(row, i, unit, { highUsage, isTop, total });
+  }).join('');
   rows.forEach((row, i) => instantiateMeterChart(row, i));
 }
 
-function buildMeterChartCard(row, i, unit){
+function buildMeterChartCard(row, i, unit, flags){
+  flags = flags || {};
   const totals = row.perPeriod.map(pp => ({ label: pp.label, total: sumArr(pp.vals), months: pp.months.length }));
   const grand = totals.reduce((s,x)=>s+x.total,0);
   const nP = totals.length;
@@ -4991,13 +5011,22 @@ function buildMeterChartCard(row, i, unit){
   let peak = { label:'—', total:0 };
   totals.forEach(x => { if (x.total > peak.total) peak = x; });
   const commentary = ST.meterCommentary[row.key] || '';
+  const highBadge = flags.isTop ? '<span class="mh-high">▲ TOP CONSUMER</span>'
+                  : flags.highUsage ? '<span class="mh-high">▲ HIGH USAGE</span>' : '';
+  const blockCls = (flags.isTop || flags.highUsage) ? ' high-usage' : '';
 
   let tableHtml;
   if (row.isVirtual && row.members && row.members.length){
-    const memberRows = row.members.map(m => {
+    // Highlight dominant member meters (the biggest, and any >=1.5x the member avg).
+    const memberTotals = row.members.map(m => ST.periods.reduce((s,p)=>s+sumArr(p.series[m]||[]),0));
+    const memMean = memberTotals.length ? memberTotals.reduce((s,v)=>s+v,0)/memberTotals.length : 0;
+    const memMax = Math.max(0, ...memberTotals);
+    const memberRows = row.members.map((m, mi) => {
       const per = ST.periods.map(p => sumArr(p.series[m]||[]));
-      const mTot = per.reduce((s,v)=>s+v,0);
-      return `<tr><td>${escapeHtml(m)}</td>${per.map(v=>`<td class="right">${dv(v)}</td>`).join('')}<td class="right"><strong>${dv(mTot)}</strong></td></tr>`;
+      const mTot = memberTotals[mi];
+      const hi = row.members.length > 1 && mTot > 0 && (mTot === memMax || mTot >= 1.5 * memMean);
+      const tag = hi ? ' <span class="hi-tag">high</span>' : '';
+      return `<tr class="${hi?'high-usage-row':''}"><td>${escapeHtml(m)}${tag}</td>${per.map(v=>`<td class="right">${dv(v)}</td>`).join('')}<td class="right"><strong>${dv(mTot)}</strong></td></tr>`;
     }).join('');
     tableHtml = `<table class="data-tbl">
       <thead><tr><th>Individual meter</th>${ST.periods.map(p=>`<th class="right">${escapeHtml(p.label)}</th>`).join('')}<th class="right">Total ${unit}</th></tr></thead>
@@ -5016,10 +5045,11 @@ function buildMeterChartCard(row, i, unit){
       </tbody></table>`;
   }
 
-  return `<div class="meter-block">
+  return `<div class="meter-block${blockCls}">
     <div class="meter-block-header">
       <span class="mh-name">${escapeHtml(row.label)}</span>
       ${row.isVirtual ? '<span class="mh-virtual">Virtual / system</span>' : ''}
+      ${highBadge}
       <span class="mh-loc">${dv(grand)} ${unit} total · ${dv(avg)}/period avg · peak ${escapeHtml(peak.label)}</span>
     </div>
     <div class="meter-block-body">
@@ -5091,11 +5121,11 @@ async function generateMeterAISummary(i){
       perPeriod: row.perPeriod.map(pp => ({ period: pp.label, monthly: pp.vals.map(x => +(+x).toFixed(1)), total: +sumArr(pp.vals).toFixed(1) })),
       memberTotals: row.isVirtual ? Object.fromEntries(row.members.map(m => [m, +ST.periods.reduce((s,p)=>s+sumArr(p.series[m]||[]),0).toFixed(1)])) : undefined
     };
-    const prompt = `You are a senior Australian hydraulic services engineer writing the commentary for one metered system in a water tuning report. Write 2-4 sentences of professional commentary on the consumption of "${row.label}". Cite the key figures (total, trend across the reporting periods, peak period, and for a system the dominant member meters), and finish with a practical implication or recommendation. Respond with plain prose only — no headings, bullet points or preamble.\n\nData: ${JSON.stringify(payload)}`;
+    const prompt = `You are a senior Australian hydraulic services engineer. In 1-2 short, concise sentences, summarise the consumption of "${row.label}" for a water tuning report: state the single most important figure or trend, and add a brief recommendation only if clearly warranted. Be terse and specific — no headings, bullet points, or preamble.\n\nData: ${JSON.stringify(payload)}`;
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type':'application/json', 'x-api-key':apiKey, 'anthropic-version':'2023-06-01', 'anthropic-dangerous-direct-browser-access':'true' },
-      body: JSON.stringify({ model, max_tokens: 400, messages: [{ role:'user', content: prompt }] })
+      body: JSON.stringify({ model, max_tokens: 160, messages: [{ role:'user', content: prompt }] })
     });
     if (!response.ok){ let d=''; try { d = (await response.json())?.error?.message || ''; } catch(_){}
       if (response.status === 401) throw new Error('Invalid API key (401). Check the key on the Observations page.');
