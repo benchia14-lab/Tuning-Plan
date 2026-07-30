@@ -443,6 +443,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
     <button class="sb-btn" id="nav-benchmarks" onclick="showPage('benchmarks')"><span class="sb-icon">🎯</span>Benchmarks</button>
     <button class="sb-btn" id="nav-editperiods" onclick="showPage('editperiods')"><span class="sb-icon">✏️</span>Edit periods</button>
     <button class="sb-btn" id="nav-charts"      onclick="showPage('charts')"><span class="sb-icon">📈</span>Charts &amp; commentary</button>
+    <button class="sb-btn" id="nav-bills"       onclick="showPage('bills')"><span class="sb-icon">🧾</span>Utility bills</button>
     <button class="sb-btn" id="nav-section6"    onclick="showPage('section6')"><span class="sb-icon">💬</span>Observations</button>
     <button class="sb-btn" id="nav-actions"     onclick="showPage('actions')"><span class="sb-icon">✅</span>Actions</button>
   </div>
@@ -770,6 +771,40 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
     <div class="btn-row">
       <button class="btn btn-secondary" onclick="showPage('data')">← Back</button>
       <button class="btn btn-primary" onclick="showPage('systems')">Next — Metered systems →</button>
+    </div>
+  </div>
+
+  <!-- ═══ UTILITY BILL COMPARISON ═══ -->
+  <div class="page" id="page-bills">
+    <div class="page-title">Utility Bill Comparison</div>
+    <div class="page-sub">Compare what the building was billed by the water utility against what the mains meters actually recorded. Each bill uses its own billing cycle — set its own start and end dates independently of the reporting periods.</div>
+
+    <div class="card">
+      <div class="card-title">Building total source — mains meters</div>
+      <div id="billsMainsStatus"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Add a billing period</div>
+      <div class="three-col">
+        <div class="fg"><label>Bill label</label><input type="text" id="billLabel" placeholder="e.g. Jul–Sep 2026"></div>
+        <div class="fg"><label>Billing start</label><input type="date" id="billStart"></div>
+        <div class="fg"><label>Billing end</label><input type="date" id="billEnd"></div>
+      </div>
+      <div class="three-col">
+        <div class="fg"><label>Billed consumption (kL)</label><input type="number" step="any" id="billKL" placeholder="e.g. 1250"></div>
+        <div class="fg"><label>Bill amount $ (optional)</label><input type="number" step="any" id="billCost" placeholder="optional"></div>
+        <div class="fg" style="display:flex;align-items:flex-end"><button class="btn btn-primary" style="width:100%" onclick="addUtilityBill()">+ Add bill</button></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Billed vs metered (mains)</div>
+      <div id="billsList"></div>
+      <div class="chart-card" id="billsChartCard" style="display:none;margin-top:14px">
+        <h4>Billed vs Metered (mains) consumption</h4>
+        <div class="meter-chart-wrap"><canvas id="billsChart"></canvas></div>
+      </div>
     </div>
   </div>
 
@@ -1535,7 +1570,8 @@ const ST = {
   lockedAt: null,     // ISO timestamp when finalised
   lockChecksum: null, // data checksum captured at finalise time (tamper-evidence)
   activeProjectId: null, // id of the launcher project currently loaded (session only)
-  meterCommentary: {}    // per-meter commentary keyed by meter key (raw name or __vm_<id>)
+  meterCommentary: {},   // per-meter commentary keyed by meter key (raw name or __vm_<id>)
+  utilityBills: []       // [{id, label, start:'YYYY-MM-DD', end, billedKL, cost}] — water bills vs metered mains
 };
 let obsFilterActive = 'all';
 
@@ -1564,6 +1600,7 @@ function showPage(name) {
   if (name === 'benchmarks')  renderBenchmarks();
   if (name === 'project')     renderBrandingControls();
   if (name === 'charts')      renderChartsPage();
+  if (name === 'bills')       renderUtilityBills();
   window.scrollTo({top:0, behavior:'smooth'});
 }
 
@@ -5193,6 +5230,170 @@ async function generateMeterAISummary(i){
   }
 }
 
+// ═══ UTILITY BILL COMPARISON ════════════════════════════════════════════════
+// Compares the water utility's billed consumption against the actual metered
+// mains consumption over each bill's own date window. Bills have independent
+// billing cycles, so actual usage is derived from daily mains data (or, when a
+// period lacks daily data, by spreading its monthly mains total across the days).
+let billsChartInstance = null;
+
+function monthKeyFromLabel(label){
+  const mi = monthIndexFromLabel(label);
+  const ym = String(label).match(/(\d{2,4})\s*$/);
+  if (mi == null || !ym) return null;
+  let y = +ym[1]; if (y < 100) y += 2000;
+  return `${y}-${String(mi+1).padStart(2,'0')}`;
+}
+
+// Daily consumption of the mains meters across every period → { 'YYYY-MM-DD': kL }.
+function buildMainsDailyMap(){
+  const map = {};
+  const mains = new Set(ST.mainsMeters || []);
+  if (!mains.size) return map;
+  ST.periods.forEach(p => {
+    const keys = ((p.dataCols && p.dataCols.length) ? p.dataCols : Object.keys(p.series||{})).filter(k => mains.has(k));
+    keys.forEach(k => {
+      const daily = p.dailySeries && p.dailySeries[k];
+      if (daily && daily.length){
+        daily.forEach(d => { map[d.d] = (map[d.d] || 0) + (+d.v || 0); });
+      } else {
+        (p.months || []).forEach((mlabel, mi) => {
+          const ym = monthKeyFromLabel(mlabel);
+          if (!ym) return;
+          const val = (p.series[k] || [])[mi] || 0;
+          const [y, mo] = ym.split('-').map(Number);
+          const dim = new Date(y, mo, 0).getDate();
+          const per = val / dim;
+          for (let d = 1; d <= dim; d++){ map[`${ym}-${String(d).padStart(2,'0')}`] = (map[`${ym}-${String(d).padStart(2,'0')}`] || 0) + per; }
+        });
+      }
+    });
+  });
+  return map;
+}
+
+// Actual metered mains consumption within [start, end] (inclusive), + day coverage.
+function actualMainsForRange(start, end, mapArg){
+  if (!start || !end) return { actual: 0, days: 0 };
+  const map = mapArg || buildMainsDailyMap();
+  let sum = 0, days = 0;
+  Object.keys(map).forEach(dk => { if (dk >= start && dk <= end){ sum += map[dk]; days++; } });
+  return { actual: sum, days };
+}
+
+function addUtilityBill(){
+  const label = (document.getElementById('billLabel').value || '').trim();
+  const start = document.getElementById('billStart').value;
+  const end   = document.getElementById('billEnd').value;
+  const billedKL = parseFloat(document.getElementById('billKL').value);
+  const cost = parseFloat(document.getElementById('billCost').value);
+  if (!start || !end){ alert('Enter the billing start and end dates.'); return; }
+  if (end < start){ alert('The billing end date is before the start date.'); return; }
+  if (!isFinite(billedKL)){ alert('Enter the billed consumption (kL).'); return; }
+  ST.utilityBills.push({
+    id: Date.now(),
+    label: label || `${start} → ${end}`,
+    start, end, billedKL,
+    cost: isFinite(cost) ? cost : null
+  });
+  ST.utilityBills.sort((a,b) => (a.start||'').localeCompare(b.start||''));
+  ['billLabel','billStart','billEnd','billKL','billCost'].forEach(id => { const el = document.getElementById(id); if (el) el.value=''; });
+  renderUtilityBills();
+}
+
+function updateUtilityBill(id, field, val){
+  const b = ST.utilityBills.find(x => x.id === id);
+  if (!b) return;
+  if (field === 'billedKL' || field === 'cost'){ const n = parseFloat(val); b[field] = isFinite(n) ? n : (field==='cost'?null:0); }
+  else b[field] = val;
+  if (field === 'start') ST.utilityBills.sort((a,b2) => (a.start||'').localeCompare(b2.start||''));
+  renderUtilityBills();
+}
+
+function removeUtilityBill(id){
+  if (!confirm('Delete this billing period?')) return;
+  ST.utilityBills = ST.utilityBills.filter(x => x.id !== id);
+  renderUtilityBills();
+}
+
+function renderUtilityBills(){
+  const unit = unitLabel();
+  const mains = ST.mainsMeters || [];
+  const map = buildMainsDailyMap();
+  const hasDailyForMains = Object.keys(map).length > 0;
+
+  // Mains status card
+  const statusEl = document.getElementById('billsMainsStatus');
+  if (statusEl){
+    if (!mains.length){
+      statusEl.innerHTML = `<div class="raw-warn">No mains meters are set. Go to <strong>Meter set up</strong> and flag your building incomer(s) as <em>mains</em> — their combined daily consumption is the "actual" used for the comparison.</div>`;
+    } else {
+      const totalMains = ST.periods.reduce((s,p) => s + mainsMeterKeysOf(p).reduce((ss,k)=>ss+sumArr(p.series[k]||[]),0), 0);
+      statusEl.innerHTML = `<div style="font-size:12.5px;color:var(--muted);line-height:1.6">
+        Building total is the sum of the mains meter(s): <strong style="color:var(--text)">${mains.map(escapeHtml).join(', ')}</strong> —
+        <strong style="color:var(--teal-d)">${dv(totalMains)} ${unit}</strong> recorded across all data.
+        ${hasDailyForMains ? 'Daily mains data is available, so bill windows are matched to the day.' : 'No daily mains data — monthly totals are spread evenly across days to estimate each bill window.'}
+        Set mains meters on the <strong>Meter set up</strong> page.
+      </div>`;
+    }
+  }
+
+  // Bills list
+  const listEl = document.getElementById('billsList');
+  const chartCard = document.getElementById('billsChartCard');
+  if (!ST.utilityBills.length){
+    if (listEl) listEl.innerHTML = `<p style="font-size:13px;color:var(--muted)">No bills added yet. Add a billing period above to compare it against metered usage.</p>`;
+    if (chartCard) chartCard.style.display = 'none';
+    if (billsChartInstance){ try{billsChartInstance.destroy();}catch(_){} billsChartInstance=null; }
+    return;
+  }
+
+  const rows = ST.utilityBills.map(b => {
+    const { actual, days } = actualMainsForRange(b.start, b.end, map);
+    const variance = b.billedKL > 0 ? (actual - b.billedKL) / b.billedKL * 100 : (actual>0?100:0);
+    const vColor = Math.abs(variance) <= 5 ? '#059669' : (Math.abs(variance) <= 15 ? '#92400e' : '#b91c1c');
+    return `<tr>
+      <td><input value="${escapeHtml(b.label)}" oninput="updateUtilityBill(${b.id},'label',this.value)" style="border:none;background:transparent;font-size:12px;width:120px;padding:2px"></td>
+      <td><input type="date" value="${b.start}" onchange="updateUtilityBill(${b.id},'start',this.value)" style="border:1px solid var(--border);border-radius:4px;font-size:11px;padding:2px 4px"></td>
+      <td><input type="date" value="${b.end}" onchange="updateUtilityBill(${b.id},'end',this.value)" style="border:1px solid var(--border);border-radius:4px;font-size:11px;padding:2px 4px"></td>
+      <td class="right"><input type="number" step="any" value="${b.billedKL}" onchange="updateUtilityBill(${b.id},'billedKL',this.value)" style="border:1px solid var(--border);border-radius:4px;font-size:12px;padding:2px 4px;width:80px;text-align:right"></td>
+      <td class="right">${dv(actual)}<div style="font-size:9px;color:var(--muted)">${days} day${days!==1?'s':''} data</div></td>
+      <td class="right" style="color:${vColor};font-weight:700">${variance>0?'+':''}${variance.toFixed(1)}%</td>
+      <td class="right">${b.cost!=null?'$'+(+b.cost).toLocaleString():'—'}</td>
+      <td><button class="btn btn-danger btn-sm" onclick="removeUtilityBill(${b.id})">✕</button></td>
+    </tr>`;
+  }).join('');
+
+  if (listEl){
+    listEl.innerHTML = `<div class="data-tbl-wrap"><table class="data-tbl">
+      <thead><tr><th>Bill</th><th>Start</th><th>End</th><th class="right">Billed ${unit}</th><th class="right">Metered ${unit}</th><th class="right">Variance</th><th class="right">$</th><th></th></tr></thead>
+      <tbody>${rows}</tbody></table></div>
+      <div style="font-size:11px;color:var(--muted);margin-top:8px">Variance = metered mains vs billed. A large positive variance means the meters recorded more than the bill (possible unbilled sub-metering or meter over-read); a large negative means the bill exceeds metered usage (possible unmetered loss, leak before the sub-meters, or a billing estimate).</div>`;
+  }
+
+  // Chart: billed vs metered per bill
+  if (chartCard) chartCard.style.display = 'block';
+  const ctx = document.getElementById('billsChart');
+  if (ctx && typeof Chart !== 'undefined'){
+    if (billsChartInstance){ try{billsChartInstance.destroy();}catch(_){} }
+    const labels = ST.utilityBills.map(b => b.label);
+    const billed = ST.utilityBills.map(b => +(+b.billedKL||0).toFixed(1));
+    const actualArr = ST.utilityBills.map(b => +actualMainsForRange(b.start, b.end, map).actual.toFixed(1));
+    billsChartInstance = new Chart(ctx, {
+      type: 'bar',
+      data: { labels, datasets: [
+        { label: 'Billed ('+unit+')', data: billed, backgroundColor: '#1e5fa8' },
+        { label: 'Metered mains ('+unit+')', data: actualArr, backgroundColor: '#1a7a5e' }
+      ]},
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 11 } } } },
+        scales: { x: { ticks: { font: { size: 10 } } }, y: { beginAtZero: true, ticks: { font: { size: 10 } }, title: { display: true, text: unit } } }
+      }
+    });
+  }
+}
+
 // ─── AI observations (Claude Fable 5) ─────────────────────────────────────────
 function buildAIDataSummary() {
   // Compact payload: full monthly detail for the latest 2 periods,
@@ -6112,6 +6313,7 @@ function collectSnapshot() {
     reportUnit: ST.reportUnit,
     obsScope: ST.obsScope,
     meterCommentary: ST.meterCommentary,
+    utilityBills: ST.utilityBills,
     locked: ST.locked,
     lockedAt: ST.lockedAt,
     lockChecksum: ST.lockChecksum,
@@ -6158,6 +6360,7 @@ function applySnapshot(snap) {
   ST.reportUnit = snap.reportUnit || 'kL';
   ST.obsScope = snap.obsScope || 'all';
   ST.meterCommentary = snap.meterCommentary || {};
+  ST.utilityBills = snap.utilityBills || [];
   ST.locked = !!snap.locked;
   ST.lockedAt = snap.lockedAt || null;
   ST.lockChecksum = snap.lockChecksum || null;
