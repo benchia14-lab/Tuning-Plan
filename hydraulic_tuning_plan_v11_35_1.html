@@ -412,6 +412,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 .raw-mode-cumulative{background:#ede9fe;color:#7c3aed}
 .raw-warn{background:var(--amber-l);border:1px solid #f0c675;color:#7c4a03;border-radius:8px;padding:9px 12px;font-size:12px;margin-top:10px;line-height:1.5}
 
+/* Benchmark summary table — dense, non-wrapping, scrolls if too wide */
+.bench-summary{font-size:11.5px}
+.bench-summary th,.bench-summary td{padding:6px 9px;white-space:nowrap}
+.bench-summary td:first-child{white-space:normal}
+
 /* Charts tab — higher-usage highlighting */
 .meter-block.high-usage{border-color:#d4820a;box-shadow:0 0 0 2px rgba(212,130,10,0.14)}
 .mh-high{font-size:10px;font-weight:700;background:#d4820a;color:#fff;padding:2px 8px;border-radius:10px;letter-spacing:0.03em}
@@ -3177,30 +3182,40 @@ function _renderReportInner(out) {
       '<div class="rpt-h1">' + secNum6 + '\xa0\xa0\xa0Benchmark Comparison</div>' +
       '<div class="rpt-body" style="margin-bottom:8px">Each benchmark group lumps the nominated meters together and compares their combined actual consumption against the expected (benchmark) consumption issued for the job. Actual and benchmark are shown side by side, month by month.</div>';
 
-    // Summary table across all groups
+    // Summary table across all groups. The member list is shown as a compact
+    // count (full list on hover) so the table doesn't overflow, and each period's
+    // Actual/Bench/Var trio is visually separated by a left border.
+    const GSEP = 'border-left:2px solid var(--border)';       // separator in the body
+    const HSEP = 'border-left:2px solid rgba(255,255,255,0.3)'; // separator in the (teal) header
     html += '<div class="rpt-h2" style="margin-top:14px">' + secNum6 + '.1 Summary — Actual vs Benchmark by Group</div>' +
-      '<div class="data-tbl-wrap"><table class="data-tbl">' +
-      '<thead><tr><th>Benchmark group</th><th class="right">Contributing meters</th>' +
-      ST.periods.map(p => '<th class="right" colspan="3">' + p.label + '</th>').join('') +
-      '<th class="right" colspan="3">All periods</th>' +
-      '</tr><tr><th></th><th></th>' +
-      ST.periods.map(() => '<th class="right">Actual</th><th class="right">Bench</th><th class="right">Var</th>').join('') +
-      '<th class="right">Actual</th><th class="right">Bench</th><th class="right">Var</th>' +
+      '<div class="data-tbl-wrap"><table class="data-tbl bench-summary">' +
+      '<thead>' +
+      '<tr><th rowspan="2" style="vertical-align:bottom">Benchmark group</th>' +
+      '<th rowspan="2" class="right" style="vertical-align:bottom">Meters</th>' +
+      ST.periods.map(p => '<th colspan="3" style="text-align:center;' + HSEP + '">' + escapeHtml(p.label) + '</th>').join('') +
+      '<th colspan="3" style="text-align:center;' + HSEP + '">All periods</th>' +
+      '</tr><tr>' +
+      ST.periods.map(() => '<th class="right" style="' + HSEP + '">Actual</th><th class="right">Bench</th><th class="right">Var</th>').join('') +
+      '<th class="right" style="' + HSEP + '">Actual</th><th class="right">Bench</th><th class="right">Var</th>' +
       '</tr></thead><tbody>' +
       benchGroupRows.map(row => {
         const cells = row.perPeriod.map(pp => {
           const variance = varianceOf(pp.actual, pp.benchmark);
           const varCell = variance != null ? '<span style="color:' + varianceColor(variance) + ';font-weight:600">' + (variance>0?'+':'') + variance.toFixed(1) + '%</span>' : '—';
-          return '<td class="right">' + dv(pp.actual) + '</td><td class="right">' + (pp.benchmark!=null?dv(pp.benchmark):'—') + '</td><td class="right">' + varCell + '</td>';
+          return '<td class="right" style="' + GSEP + '">' + dv(pp.actual) + '</td><td class="right">' + (pp.benchmark!=null?dv(pp.benchmark):'—') + '</td><td class="right">' + varCell + '</td>';
         }).join('');
         const totActual = row.perPeriod.reduce((s,pp)=>s+pp.actual,0);
         const totBench  = row.perPeriod.reduce((s,pp)=>s+(pp.benchmark||0),0);
         const totVar = varianceOf(totActual, totBench);
         const totVarCell = totVar != null ? '<span style="color:' + varianceColor(totVar) + ';font-weight:700">' + (totVar>0?'+':'') + totVar.toFixed(1) + '%</span>' : '—';
-        return '<tr><td><strong>' + row.label + '</strong></td><td class="right" style="font-size:11px;color:var(--muted)">' + row.memberLabels.join(', ') + '</td>' + cells +
-          '<td class="right"><strong>' + dv(totActual) + '</strong></td><td class="right"><strong>' + dv(totBench) + '</strong></td><td class="right">' + totVarCell + '</td></tr>';
+        const nMem = row.memberLabels.length;
+        const memCell = '<span title="' + escapeHtml(row.memberLabels.join(', ')) + '" style="cursor:help;border-bottom:1px dotted var(--muted)">' + nMem + ' meter' + (nMem!==1?'s':'') + '</span>';
+        return '<tr><td style="white-space:nowrap"><strong>' + escapeHtml(row.label) + '</strong></td>' +
+          '<td class="right" style="font-size:11px;color:var(--muted);white-space:nowrap">' + memCell + '</td>' + cells +
+          '<td class="right" style="' + GSEP + '"><strong>' + dv(totActual) + '</strong></td><td class="right"><strong>' + dv(totBench) + '</strong></td><td class="right">' + totVarCell + '</td></tr>';
       }).join('') +
-      '</tbody></table></div>';
+      '</tbody></table></div>' +
+      '<div style="font-size:11px;color:var(--muted);margin-top:6px">Values in ' + unitLabel() + '. Hover the "Meters" count to see the contributing meters. Actual / Bench(mark) / Var(iance) are shown for each period. Scroll the table sideways if it exceeds the page.</div>';
 
     // One side-by-side chart per group
     benchGroupRows.forEach((row, gi) => {
@@ -6571,8 +6586,8 @@ function saveCurrentAsProject() {
   let id = Object.keys(map).find(k => (map[k].name || '').toLowerCase() === name.toLowerCase());
   if (id && !confirm(`A project called "${name}" already exists. Overwrite it with the current data?`)) return;
   id = id || ('proj_' + Date.now().toString(36));
-  map[id] = { id, name, savedAt: new Date().toISOString(), snap: collectSnapshot() };
-  if (!writeProjects(map)) { alert('Could not save — browser storage is full. Save a project file instead.'); return; }
+  map[id] = { id, name, savedAt: new Date().toISOString(), snap: lightSnapshot(collectSnapshot()) };
+  if (!writeProjects(map)) { alert('Could not save to browser — storage is full. Use "Save project file" to download a .htpj instead (unlimited size), or remove old browser projects.'); return; }
   ST.activeProjectId = id;
   openProjectLauncher();   // refresh the list
 }
@@ -6581,8 +6596,8 @@ function updateProject(id) {
   const map = readProjects();
   if (!map[id]) return;
   if (!confirm(`Overwrite "${map[id].name}" with the current data?`)) return;
-  map[id] = { ...map[id], savedAt: new Date().toISOString(), snap: collectSnapshot() };
-  writeProjects(map);
+  map[id] = { ...map[id], savedAt: new Date().toISOString(), snap: lightSnapshot(collectSnapshot()) };
+  if (!writeProjects(map)) { alert('Could not save to browser — storage is full. Use "Save project file" to download a .htpj instead.'); return; }
   ST.activeProjectId = id;
   openProjectLauncher();
 }
@@ -6968,6 +6983,18 @@ const BACKUP_KEY = 'htp_backups';   // array of {ts, snap}, newest first
 const BACKUP_MAX = 5;
 const LEGACY_BACKUP_KEY = 'htp_state';
 
+// A lighter snapshot for localStorage — strips the bulky per-period daily
+// breakdown (dailySeries), which can be many thousands of points and quickly
+// exceeds the ~5 MB browser-storage quota. The full data, including dailySeries,
+// is always kept in the downloaded .htpj project file.
+function lightSnapshot(snap){
+  const out = { ...snap };
+  if (Array.isArray(snap.periods)) {
+    out.periods = snap.periods.map(p => { const { dailySeries, ...rest } = p; return rest; });
+  }
+  return out;
+}
+
 function readBackups() {
   try {
     const arr = JSON.parse(localStorage.getItem(BACKUP_KEY) || '[]');
@@ -6993,6 +7020,7 @@ function writeBackups(list) {
 // newest entry, so the periodic autosave doesn't fill the ring with duplicates.
 function pushBackup(snap, opts) {
   const force = opts && opts.force;
+  const light = lightSnapshot(snap);   // store without the heavy daily breakdown
   let list = readBackups();
   // One-time migration: seed the ring from the old single-slot backup.
   if (!list.length) {
@@ -7004,9 +7032,9 @@ function pushBackup(snap, opts) {
       }
     } catch(_) {}
   }
-  const json = JSON.stringify(snap);
+  const json = JSON.stringify(light);
   if (!force && list.length && JSON.stringify(list[0].snap) === json) return true; // no change
-  list.unshift({ ts: snap._saved || new Date().toISOString(), snap });
+  list.unshift({ ts: light._saved || new Date().toISOString(), snap: light });
   const ok = writeBackups(list);
   try { localStorage.setItem(LEGACY_BACKUP_KEY, json); } catch(_) {}
   return ok;
