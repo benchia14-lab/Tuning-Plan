@@ -673,13 +673,23 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
         </div>
       </div>
 
-      <div class="fg" style="margin-bottom:12px">
-        <label>Data unit</label>
-        <select id="dataUnit">
-          <option value="kl">Kilolitres (kL) — no conversion needed</option>
-          <option value="l">Litres (L) — will be converted to kL ÷1000</option>
-        </select>
+      <div class="two-col">
+        <div class="fg" style="margin-bottom:12px">
+          <label>Data unit</label>
+          <select id="dataUnit">
+            <option value="kl">Kilolitres (kL) — no conversion needed</option>
+            <option value="l">Litres (L) — will be converted to kL ÷1000</option>
+          </select>
+        </div>
+        <div class="fg" style="margin-bottom:12px">
+          <label>Data granularity</label>
+          <select id="dataGranularity" onchange="document.getElementById('dailyModeNotice').style.display = this.value==='daily' ? 'block' : 'none'">
+            <option value="monthly">Monthly totals — each row/column is already one month</option>
+            <option value="daily">Daily readings — each row/column is a day; total into months</option>
+          </select>
+        </div>
       </div>
+      <div class="notice" id="dailyModeNotice" style="display:none;margin-bottom:12px">📅 Daily mode: the "month / period column" (or the column headers in rows mode) must contain <strong>dates</strong>. All days in the same calendar month are totalled into that month's value, and the daily breakdown is kept for anomaly detection.</div>
       <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
         <span class="dz-icon">📂</span>
         <div class="dz-title" id="dropLabel">Drop Excel or CSV file here, or click to browse</div>
@@ -2395,6 +2405,9 @@ function renderPreview() {
 }
 
 function addPeriod() {
+  // Daily granularity → total the daily readings into monthly values first.
+  if ((document.getElementById('dataGranularity') || {}).value === 'daily') { addPeriodDaily(); return; }
+
   const label     = document.getElementById('periodLabel').value.trim() || `Period ${ST.periods.length+1}`;
   const issueDate = document.getElementById('issueDate').value.trim()   || new Date().toLocaleDateString('en-AU');
   const revNo     = document.getElementById('revNo').value.trim()       || String(ST.periods.length+1).padStart(2,'0');
@@ -2500,13 +2513,87 @@ function addPeriod() {
 }
 
 // Commit a validated period into state and refresh the UI.
+// Build a period from DAILY readings — totals each meter's daily values into
+// monthly figures (the report uses monthly), and keeps the daily breakdown for
+// anomaly detection. Works with both orientations of the manual uploader.
+function addPeriodDaily() {
+  const label     = document.getElementById('periodLabel').value.trim() || `Period ${ST.periods.length+1}`;
+  const issueDate = document.getElementById('issueDate').value.trim()   || new Date().toLocaleDateString('en-AU');
+  const revNo     = document.getElementById('revNo').value.trim()       || String(ST.periods.length+1).padStart(2,'0');
+  const unit      = document.getElementById('dataUnit').value;
+  const factor    = unit === 'l' ? 0.001 : 1;
+  const orientation = ST.colMap.orientation || 'cols';
+  const excluded  = ST.colMap.excluded || new Set();
+  const descCol   = ST.colMap.month || ST.headers[0];
+  const TOTAL_PAT = /^(total|combined.*|grand total|subtotal|sub total|sum|totals)$/i;
+
+  // Collect {meter, ts, value} readings from the parsed daily rows.
+  const readings = [];
+  if (orientation === 'rows') {
+    // meters down rows, date columns across the top
+    const dateHeaders = ST.headers.filter(h => h !== descCol && !excluded.has(h) && !h.startsWith('(blank'));
+    ST.parsedData.forEach(row => {
+      const meter = String(row[descCol] || '').trim();
+      if (!meter || TOTAL_PAT.test(meter)) return;
+      dateHeaders.forEach(h => {
+        const ts = parseTimestamp(h);
+        const v = parseFloat(row[h]);
+        if (ts && isFinite(v)) readings.push({ meter, ts, value: v });
+      });
+    });
+  } else {
+    // dates down the desc column, meters across columns
+    const meterCols = ST.headers.filter(h => h !== descCol && !excluded.has(h) && !TOTAL_PAT.test(h.trim()) && !h.startsWith('(blank'));
+    ST.parsedData.forEach(row => {
+      const ts = parseTimestamp(row[descCol]);
+      if (!ts) return;
+      meterCols.forEach(c => { const v = parseFloat(row[c]); if (isFinite(v)) readings.push({ meter: c, ts, value: v }); });
+    });
+  }
+
+  if (!readings.length) {
+    showImportValidation(['No daily rows could be read. In daily mode the month/period column (columns mode) or the column headers (rows mode) must contain real dates.'], [], false);
+    return;
+  }
+
+  // Aggregate to daily then monthly per meter (unit factor applied).
+  const byMeter = {};
+  readings.forEach(r => { (byMeter[r.meter] = byMeter[r.meter] || []).push(r); });
+  const monthSet = {};
+  const meterDaily = {}, meterMonthly = {};
+  Object.entries(byMeter).forEach(([m, arr]) => {
+    const daily = {};
+    arr.forEach(r => { const dk = dayKey(r.ts); daily[dk] = (daily[dk] || 0) + r.value * factor; });
+    meterDaily[m] = daily;
+    const monthly = {};
+    Object.keys(daily).forEach(dk => { const mk = dk.slice(0,7); monthly[mk] = (monthly[mk] || 0) + daily[dk]; monthSet[mk] = true; });
+    meterMonthly[m] = monthly;
+  });
+  const monthKeys = Object.keys(monthSet).sort();
+  const months = monthKeys.map(mk => { const [y,mo] = mk.split('-'); return `${MON_ABBR[+mo-1]}-${y.slice(-2)}`; });
+  const dataCols = Object.keys(byMeter);
+  const series = {}, dailySeries = {};
+  dataCols.forEach(m => {
+    series[m] = monthKeys.map(mk => round2(meterMonthly[m][mk] || 0));
+    dailySeries[m] = Object.keys(meterDaily[m]).sort().map(d => ({ d, v: round2(meterDaily[m][d]) }));
+  });
+
+  const payload = { label, issueDate, revNo, months, dataCols, series, dailySeries };
+  const { errors, warnings } = validateImport(months, dataCols, series, null);
+  if (errors.length) { showImportValidation(errors, warnings, false); return; }
+  if (warnings.length) { window.__pendingPeriod = payload; showImportValidation(errors, warnings, true); return; }
+  finalizePeriod(payload);
+}
+
 function finalizePeriod(payload) {
   const { label, issueDate, revNo, months, dataCols, series } = payload;
 
   const combined    = months.map((_,i) => dataCols.reduce((s,c) => s + (series[c][i]||0), 0));
   const actualCumul = combined.map((_,i,a) => a.slice(0,i+1).reduce((s,vv)=>s+vv,0));
 
-  ST.periods.push({label, issueDate, revNo, months, dataCols, series, combined, actualCumul});
+  const period = {label, issueDate, revNo, months, dataCols, series, combined, actualCumul};
+  if (payload.dailySeries) { period.dailySeries = payload.dailySeries; period.sourceMode = 'raw'; }
+  ST.periods.push(period);
 
   // Auto-update revision history
   const prepBy   = document.getElementById('preparedBy').value || '';
@@ -4117,7 +4204,7 @@ function togglePeriodExclude(pi, meterName) {
   if (idx > -1) p.excludedMeters.splice(idx, 1);
   else p.excludedMeters.push(meterName);
   recalcPeriodCombined(p);
-  renderPeriodEditor();
+  refreshPeriodEditorInline();   // keep the editor open so multiple meters can be toggled
 }
 
 function toggleMainsMeter(meterName) {
@@ -4133,7 +4220,7 @@ function toggleMainsMeter(meterName) {
   }
   // Combined totals change because mains no longer contributes
   ST.periods.forEach(p => recalcPeriodCombined(p));
-  renderPeriodEditor();
+  refreshPeriodEditorInline();
 }
 
 // Flag/unflag a meter as NOT sourced from the mains (e.g. rainwater tank outlet).
@@ -4143,7 +4230,38 @@ function toggleNonReconMeter(meterName) {
   const idx = ST.nonReconMeters.indexOf(meterName);
   if (idx > -1) ST.nonReconMeters.splice(idx, 1);
   else ST.nonReconMeters.push(meterName);
-  renderPeriodEditor();
+  refreshPeriodEditorInline();
+}
+
+// Re-render only the mains/exclusion sub-lists of any OPEN period editor and
+// refresh the totals in place — so toggling a meter doesn't collapse the editor.
+function refreshPeriodEditorInline() {
+  ST.periods.forEach((p, pi) => {
+    const body = document.getElementById(`peb_body_${pi}`);
+    if (body && body.classList.contains('open')) {
+      renderMainsMeterList(pi);
+      renderPeriodExclusionList(pi);
+    }
+    updatePeriodTotalsDOM(pi);
+  });
+}
+
+// Update a period block's combined column, footer total, and header meta from
+// the already-recalculated p.combined (no full re-render).
+function updatePeriodTotalsDOM(pi) {
+  const p = ST.periods[pi];
+  if (!p) return;
+  p.months.forEach((_, mi) => {
+    const cell = document.querySelector(`#peb_body_${pi} tbody tr:nth-child(${mi+1}) td.total-cell`);
+    if (cell) cell.textContent = (p.combined[mi] || 0).toFixed(1);
+  });
+  const foot = document.getElementById(`peb_combined_${pi}`);
+  if (foot) foot.textContent = p.combined.reduce((s,v)=>s+v,0).toFixed(1);
+  const meta = document.querySelector(`#peb_${pi} .peb-meta`);
+  if (meta) {
+    const total = p.combined.reduce((s,v)=>s+v,0);
+    meta.innerHTML = `${p.months.length} month${p.months.length!==1?'s':''} &nbsp;·&nbsp; ${p.dataCols.length} meter${p.dataCols.length!==1?'s':''} &nbsp;·&nbsp; ${total.toFixed(1)} kL total &nbsp;·&nbsp; Issued: ${p.issueDate||'—'}`;
+  }
 }
 
 // Sub-meter keys that count toward the MAINS reconciliation.
