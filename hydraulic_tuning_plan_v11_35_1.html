@@ -413,9 +413,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 .raw-warn{background:var(--amber-l);border:1px solid #f0c675;color:#7c4a03;border-radius:8px;padding:9px 12px;font-size:12px;margin-top:10px;line-height:1.5}
 
 /* Benchmark summary table — dense, non-wrapping, scrolls if too wide */
-.bench-summary{font-size:11.5px}
-.bench-summary th,.bench-summary td{padding:6px 9px;white-space:nowrap}
-.bench-summary td:first-child{white-space:normal}
+/* Benchmark summary — many columns, so size to content (scroll if needed) at a
+   compact font instead of squeezing to 100% width (which truncated the numbers). */
+.bench-summary{font-size:10px;width:auto;min-width:100%;table-layout:auto}
+.bench-summary th,.bench-summary td{padding:2px 4px;white-space:nowrap}
+.bench-summary th{font-size:9px;padding:3px 4px}
+.bench-summary td:first-child{white-space:normal;min-width:84px;max-width:140px;line-height:1.2}
+.bench-summary td,.bench-summary th{border-right:1px solid rgba(0,0,0,0.05)}
+.bench-summary tr td:last-child,.bench-summary tr th:last-child{border-right:none}
 
 /* Charts tab — higher-usage highlighting */
 .meter-block.high-usage{border-color:#d4820a;box-shadow:0 0 0 2px rgba(212,130,10,0.14)}
@@ -3201,18 +3206,18 @@ function _renderReportInner(out) {
       benchGroupRows.map(row => {
         const cells = row.perPeriod.map(pp => {
           const variance = varianceOf(pp.actual, pp.benchmark);
-          const varCell = variance != null ? '<span style="color:' + varianceColor(variance) + ';font-weight:600">' + (variance>0?'+':'') + variance.toFixed(1) + '%</span>' : '—';
-          return '<td class="right" style="' + GSEP + '">' + dv(pp.actual) + '</td><td class="right">' + (pp.benchmark!=null?dv(pp.benchmark):'—') + '</td><td class="right">' + varCell + '</td>';
+          const varCell = variance != null ? '<span style="color:' + varianceColor(variance) + ';font-weight:600">' + (variance>0?'+':'') + variance.toFixed(0) + '%</span>' : '—';
+          return '<td class="right" style="' + GSEP + '">' + dv(pp.actual,0) + '</td><td class="right">' + (pp.benchmark!=null?dv(pp.benchmark,0):'—') + '</td><td class="right">' + varCell + '</td>';
         }).join('');
         const totActual = row.perPeriod.reduce((s,pp)=>s+pp.actual,0);
         const totBench  = row.perPeriod.reduce((s,pp)=>s+(pp.benchmark||0),0);
         const totVar = varianceOf(totActual, totBench);
-        const totVarCell = totVar != null ? '<span style="color:' + varianceColor(totVar) + ';font-weight:700">' + (totVar>0?'+':'') + totVar.toFixed(1) + '%</span>' : '—';
+        const totVarCell = totVar != null ? '<span style="color:' + varianceColor(totVar) + ';font-weight:700">' + (totVar>0?'+':'') + totVar.toFixed(0) + '%</span>' : '—';
         const nMem = row.memberLabels.length;
-        const memCell = '<span title="' + escapeHtml(row.memberLabels.join(', ')) + '" style="cursor:help;border-bottom:1px dotted var(--muted)">' + nMem + ' meter' + (nMem!==1?'s':'') + '</span>';
-        return '<tr><td style="white-space:nowrap"><strong>' + escapeHtml(row.label) + '</strong></td>' +
-          '<td class="right" style="font-size:11px;color:var(--muted);white-space:nowrap">' + memCell + '</td>' + cells +
-          '<td class="right" style="' + GSEP + '"><strong>' + dv(totActual) + '</strong></td><td class="right"><strong>' + dv(totBench) + '</strong></td><td class="right">' + totVarCell + '</td></tr>';
+        const memCell = '<span title="' + escapeHtml(row.memberLabels.join(', ')) + '" style="cursor:help;border-bottom:1px dotted var(--muted)">' + nMem + '</span>';
+        return '<tr><td><strong>' + escapeHtml(row.label) + '</strong></td>' +
+          '<td class="right" style="color:var(--muted);white-space:nowrap">' + memCell + '</td>' + cells +
+          '<td class="right" style="' + GSEP + '"><strong>' + dv(totActual,0) + '</strong></td><td class="right"><strong>' + dv(totBench,0) + '</strong></td><td class="right">' + totVarCell + '</td></tr>';
       }).join('') +
       '</tbody></table></div>' +
       '<div style="font-size:11px;color:var(--muted);margin-top:6px">Values in ' + unitLabel() + '. Hover the "Meters" count to see the contributing meters. Actual / Bench(mark) / Var(iance) are shown for each period. Scroll the table sideways if it exceeds the page.</div>';
