@@ -4169,12 +4169,23 @@ function renderVmDraftChecklist() {
       <span class="col-badge badge-month">SELECTED</span>
     </label>`).join('');
 }
+// Which existing virtual-meter cards are expanded (collapsed by default so the
+// list stays compact once members are selected). Session-only.
+const vmExpandedIds = new Set();
+function toggleVmCollapse(id){
+  if (vmExpandedIds.has(id)) vmExpandedIds.delete(id);
+  else vmExpandedIds.add(id);
+  renderMeterSetup();
+}
+
 function createVirtualMeter() {
   const name = document.getElementById('vmName').value.trim();
   if (!name) { alert('Please enter a name for the virtual meter.'); return; }
-  if (vmDraftMembers.length < 2) { alert('Select at least two meters to combine into a virtual meter.'); return; }
+  if (vmDraftMembers.length < 1) { alert('Select at least one meter for the virtual meter.'); return; }
   const memberCount = vmDraftMembers.length;
   addVirtualMeter(name, [...vmDraftMembers], null);
+  const newVm = ST.virtualMeters[ST.virtualMeters.length - 1];
+  if (newVm) vmExpandedIds.add(newVm.id);   // show the one you just made
   document.getElementById('vmName').value = '';
   vmDraftMembers = [];
   const msg = document.getElementById('vmCreateMsg');
@@ -4522,7 +4533,9 @@ function renderMeterSetup() {
             }).join('')}
           </div>
           <div style="font-size:10.5px;color:var(--muted);margin-bottom:4px">Mark a meter as <strong>Deducted</strong> to subtract it — e.g. to derive an unmetered/harvested value by deducting one meter from another.</div>` : '';
-        return `<div class="sys-card" style="margin-bottom:10px">
+        const expanded = vmExpandedIds.has(vm.id);
+        const negN = (vm.negativeMembers||[]).length;
+        const body = `<div style="padding:0 12px 12px">
           <span class="sc-label">Virtual meter name</span>
           <input value="${vm.name||''}" oninput="updateVirtualMeter(${vm.id},'name',this.value)"/>
           <span class="sc-label" style="margin-top:8px">Members (tick to add/remove)</span>
@@ -4538,6 +4551,16 @@ function renderMeterSetup() {
           <div style="display:flex;margin-top:8px">
             <button class="btn btn-danger btn-sm" style="margin-left:auto" onclick="removeVirtualMeter(${vm.id})">Remove virtual meter</button>
           </div>
+        </div>`;
+        return `<div class="sys-card" style="margin-bottom:10px;padding:0;overflow:hidden">
+          <div onclick="toggleVmCollapse(${vm.id})" style="display:flex;align-items:center;gap:9px;padding:11px 12px;cursor:pointer;user-select:none">
+            <span style="font-size:11px;color:var(--muted);flex-shrink:0;transition:transform .15s;transform:rotate(${expanded?90:0}deg)">▶</span>
+            <div style="flex:1;min-width:0">
+              <div style="font-size:13px;font-weight:600;color:var(--text)">${escapeHtml(vm.name||'Virtual meter')}</div>
+              <div style="font-size:11px;color:var(--muted)">${vm.members.length} meter${vm.members.length!==1?'s':''} · ${total.toFixed(1)} ${u}${negN?` · ${negN} deducted`:''}${expanded?'':' — click to edit'}</div>
+            </div>
+          </div>
+          ${expanded ? body : ''}
         </div>`;
       }).join('');
     }
