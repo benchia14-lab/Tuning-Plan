@@ -7131,12 +7131,30 @@ async function generatePDF(){
     // canvas backing store is already high-resolution. Capture it directly — no
     // resize (which needs an async repaint and would capture a blank frame).
     const hiResCharts = {};
+    // Cap the captured width. On very wide windows the on-screen chart backing
+    // store can be enormous (window width × 3 DPR), and capturing several at full
+    // resolution overflows JS's max string length ("Invalid string length"). A
+    // 1800px cap is ample for an A4 page and keeps the PDF string bounded.
+    const CHART_CAP_W = 1800;
     function chartImage(canvasId){
       if(hiResCharts[canvasId]!==undefined) return hiResCharts[canvasId];
       const src = document.getElementById(canvasId);
       let url = null;
       if(src){
-        try { url = src.toDataURL('image/png', 1.0); } catch(e){ url = null; }
+        try {
+          if (src.width > CHART_CAP_W){
+            const scale = CHART_CAP_W / src.width;
+            const tmp = document.createElement('canvas');
+            tmp.width  = CHART_CAP_W;
+            tmp.height = Math.max(1, Math.round(src.height * scale));
+            const g = tmp.getContext('2d');
+            g.fillStyle = '#ffffff'; g.fillRect(0, 0, tmp.width, tmp.height);  // flatten any transparency
+            g.drawImage(src, 0, 0, tmp.width, tmp.height);
+            url = tmp.toDataURL('image/png', 0.92);
+          } else {
+            url = src.toDataURL('image/png', 1.0);
+          }
+        } catch(e){ url = null; }
       }
       hiResCharts[canvasId] = url;
       return url;
