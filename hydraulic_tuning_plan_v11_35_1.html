@@ -132,7 +132,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 /* Charts */
 .chart-card{background:#fff;border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:14px}
 .chart-card h4{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px}
-.chart-wrap{position:relative;width:100%;height:220px}
+.chart-wrap{position:relative;width:100%;max-width:820px;height:240px}
 .chart-legend{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px}
 .chart-legend span{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted)}
 .chart-legend b{width:10px;height:10px;border-radius:2px;display:inline-block}
@@ -358,7 +358,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 .mbs-value{font-size:16px;font-weight:800;color:var(--teal-d)}
 .mbs-sub{font-size:10px;color:var(--muted);margin-top:1px}
 .meter-block-body{padding:14px}
-.meter-chart-wrap{position:relative;width:100%;height:160px}
+.meter-chart-wrap{position:relative;width:100%;max-width:820px;height:210px}
 
 /* Backup chooser modal */
 .bk-overlay{position:fixed;inset:0;background:rgba(20,25,35,0.55);display:flex;align-items:center;justify-content:center;z-index:1000;padding:20px}
@@ -2909,7 +2909,7 @@ function _renderReportInner(out) {
 
     <div class="chart-card" style="padding:14px 16px">
       <h4 style="margin-bottom:10px">Consumption by System (${unitLabel()})</h4>
-      <div style="position:relative;height:${Math.max(280,allEffKeys.length*22)}px">
+      <div style="position:relative;max-width:820px;height:${Math.max(280,allEffKeys.length*22)}px">
         <canvas id="s3_hbar"></canvas>
       </div>
     </div>
@@ -7168,7 +7168,11 @@ async function generatePDF(){
     // store can be enormous (window width × 3 DPR), and capturing several at full
     // resolution overflows JS's max string length ("Invalid string length"). A
     // 1800px cap is ample for an A4 page and keeps the PDF string bounded.
-    const CHART_CAP_W = 1800;
+    // Charts are capped in CSS to a sensible width, so at 3x density their backing
+    // store is ~2300px — under this cap, captured at full resolution (sharp). The
+    // cap only engages for an unexpectedly huge canvas, and uses high-quality
+    // downscaling then. Keeping it bounded also avoids the PDF string overflowing.
+    const CHART_CAP_W = 2600;
     function chartImage(canvasId){
       if(hiResCharts[canvasId]!==undefined) return hiResCharts[canvasId];
       const src = document.getElementById(canvasId);
@@ -7181,9 +7185,10 @@ async function generatePDF(){
             tmp.width  = CHART_CAP_W;
             tmp.height = Math.max(1, Math.round(src.height * scale));
             const g = tmp.getContext('2d');
+            g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
             g.fillStyle = '#ffffff'; g.fillRect(0, 0, tmp.width, tmp.height);  // flatten any transparency
             g.drawImage(src, 0, 0, tmp.width, tmp.height);
-            url = tmp.toDataURL('image/png', 0.92);
+            url = tmp.toDataURL('image/png', 1.0);
           } else {
             url = src.toDataURL('image/png', 1.0);
           }
