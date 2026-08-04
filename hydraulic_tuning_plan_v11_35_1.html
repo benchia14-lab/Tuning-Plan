@@ -8043,25 +8043,27 @@ async function generatePDF(){
     const benchRowsPdf = benchmarkGroupRows();
     let secNumObs = secNum6xp + 1 + secShiftPdf;
     if (benchRowsPdf.length) {
-      p(80,'Benchmark comparison…'); np();
+      // Landscape page for the wide summary table so nothing overflows the cells.
+      p(80,'Benchmark comparison…'); nlp();
       const secNum7bench = secNum6xp + 1 + secShiftPdf;
       secNumObs = secNum7bench + 1;
       sectionHead(`${secNum7bench}`,'Benchmark Comparison');
       bodyText('Each benchmark group lumps the nominated meters together and compares their combined actual consumption against the expected (benchmark) consumption issued for the job. Actual and benchmark are shown side by side.');
       y+=3;
 
-      // 7.1 Summary table across all groups
+      // 7.1 Summary table — columns fitted to the (landscape) page width.
       subHead(`${secNum7bench}.1 Summary — Actual vs Benchmark by Group`);
-      const bcNameW = Math.min(55, CW - ST.periods.length*36 - 30);
-      const perW = (CW - bcNameW) / (ST.periods.length + 1) / 3;
-      const bcColWs = [bcNameW, ...ST.periods.flatMap(()=>[perW,perW,perW]), perW,perW,perW];
+      const nSub = (ST.periods.length + 1) * 3;          // 3 cols per period + All periods
+      const bcNameW = 48;
+      const perW = (CW - bcNameW) / nSub;                // always fills the page width exactly
+      const bcColWs = [bcNameW, ...Array(nSub).fill(perW)];
       chk(12);
       sfill(TEAL); doc.rect(ML, y, CW, 6, 'F');
       sf('bold',FS.small); stxt(WHITE);
       doc.text('Benchmark group', ML+3, y+4.2);
       let hx2 = ML + bcNameW;
       [...ST.periods.map(pp=>pp.label), 'All periods'].forEach(lbl => {
-        doc.text(lbl, hx2 + (perW*3)/2, y+4.2, {align:'center'});
+        doc.text(String(lbl), hx2 + (perW*3)/2, y+4.2, {align:'center'});
         hx2 += perW*3;
       });
       y += 6;
@@ -8070,20 +8072,22 @@ async function generatePDF(){
         const cells = row.perPeriod.flatMap(pp => {
           const variance = varianceOf(pp.actual, pp.benchmark);
           return [
-            `__R__${pp.actual.toFixed(1)}`,
-            pp.benchmark!=null ? `__R__${pp.benchmark.toFixed(1)}` : '__R__—',
-            variance!=null ? `__R__${variance>0?'+':''}${variance.toFixed(1)}%` : '__R__—'
+            `__R__${dv(pp.actual,0)}`,
+            pp.benchmark!=null ? `__R__${dv(pp.benchmark,0)}` : '__R__—',
+            variance!=null ? `__R__${variance>0?'+':''}${variance.toFixed(0)}%` : '__R__—'
           ];
         });
         const totA = row.perPeriod.reduce((s,pp)=>s+pp.actual,0);
         const totB = row.perPeriod.reduce((s,pp)=>s+(pp.benchmark||0),0);
         const totV = varianceOf(totA, totB);
-        cells.push(`__R__${totA.toFixed(1)}`, `__R__${totB.toFixed(1)}`, totV!=null?`__R__${totV>0?'+':''}${totV.toFixed(1)}%`:'__R__—');
+        cells.push(`__R__${dv(totA,0)}`, `__R__${dv(totB,0)}`, totV!=null?`__R__${totV>0?'+':''}${totV.toFixed(0)}%`:'__R__—');
         chk(7);
         tableRow([row.label, ...cells], bcColWs, ri%2===0);
       });
       y+=6;
 
+      // Back to portrait for the per-group charts.
+      np();
       // 7.x — one side-by-side chart per group
       benchRowsPdf.forEach((row, gi) => {
         const chartCanvas = document.getElementById('bmgroupchart_' + row.id);
