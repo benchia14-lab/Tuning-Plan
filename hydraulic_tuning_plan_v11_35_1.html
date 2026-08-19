@@ -327,6 +327,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 .act-body-input{width:100%;border:1px solid var(--border);border-radius:6px;padding:7px 9px;font-size:12px;font-family:inherit;color:var(--text);background:#fff}
 .act-body-input:focus{outline:none;border-color:var(--teal)}
 .act-body-textarea{width:100%;border:1px solid var(--border);border-radius:6px;padding:7px 9px;font-size:12px;font-family:inherit;color:var(--text);background:#fff;resize:vertical;min-height:60px;grid-column:1/-1}
+.act-photo-drop{border:2px dashed var(--border);border-radius:8px;padding:12px;display:flex;align-items:center;gap:10px;justify-content:center;cursor:pointer;background:var(--grey);transition:all .15s}
+.act-photo-drop:hover,.act-photo-drop.drag-over{border-color:var(--teal);background:var(--teal-l)}
+.act-photo-grid{display:flex;flex-wrap:wrap;gap:10px;margin-top:8px}
+.act-photo{width:132px;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:#fff;position:relative}
+.act-photo img{width:100%;height:92px;object-fit:cover;display:block}
+.act-photo-del{position:absolute;top:4px;right:4px;background:rgba(0,0,0,0.6);color:#fff;border:none;border-radius:50%;width:20px;height:20px;cursor:pointer;font-size:11px;line-height:1;display:flex;align-items:center;justify-content:center}
+.act-photo-inrep{display:flex;align-items:center;gap:4px;font-size:10px;color:var(--muted);padding:5px 6px 0}
+.act-photo-cap{width:100%;border:none;border-top:1px solid var(--border);font-size:11px;padding:5px 6px;font-family:inherit;color:var(--text)}
+.act-photo-cap:focus{outline:none;background:var(--teal-l)}
 .act-body-textarea:focus{outline:none;border-color:var(--teal)}
 .act-full-row{grid-column:1/-1}
 .act-head-actions{display:flex;gap:6px;align-items:center;flex-shrink:0}
@@ -6797,6 +6806,62 @@ function updateAction(id, key, val) {
   if (key === 'status' || key === 'priority') renderActions();
 }
 
+// ── Action photos ─────────────────────────────────────────────────────────────
+// Downscale/compress an image file to a JPEG data URL (keeps project files small).
+function compressImage(file, maxDim, quality){
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      const img = new Image();
+      img.onload = () => {
+        let w = img.naturalWidth, h = img.naturalHeight;
+        if (Math.max(w, h) > maxDim){ const s = maxDim / Math.max(w, h); w = Math.round(w*s); h = Math.round(h*s); }
+        const c = document.createElement('canvas'); c.width = w; c.height = h;
+        const g = c.getContext('2d'); g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+        g.fillStyle = '#ffffff'; g.fillRect(0, 0, w, h); g.drawImage(img, 0, 0, w, h);
+        resolve({ dataUrl: c.toDataURL('image/jpeg', quality), w, h });
+      };
+      img.onerror = () => reject(new Error('Could not read image'));
+      img.src = e.target.result;
+    };
+    reader.onerror = () => reject(new Error('Could not read file'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function handleActionPhotos(actionId, fileList){
+  const a = ST.actions.find(x => x.id === actionId);
+  if (!a) return;
+  if (!a.photos) a.photos = [];
+  const files = Array.from(fileList || []).filter(f => /^image\//.test(f.type));
+  if (!files.length) return;
+  for (const f of files){
+    if (f.size > 25 * 1024 * 1024) { alert(`"${f.name}" is over 25 MB and was skipped.`); continue; }
+    try {
+      const { dataUrl, w, h } = await compressImage(f, 1400, 0.82);
+      a.photos.push({ id: Date.now() + Math.floor(Math.random()*100000), dataUrl, w, h, caption: '', inReport: true });
+    } catch(_) {}
+  }
+  renderActionCards();
+}
+
+function removeActionPhoto(actionId, photoId){
+  const a = ST.actions.find(x => x.id === actionId);
+  if (!a || !a.photos) return;
+  a.photos = a.photos.filter(p => p.id !== photoId);
+  renderActionCards();
+}
+function toggleActionPhotoReport(actionId, photoId){
+  const a = ST.actions.find(x => x.id === actionId);
+  const ph = a && (a.photos||[]).find(p => p.id === photoId);
+  if (ph) ph.inReport = !ph.inReport;
+}
+function updateActionPhotoCaption(actionId, photoId, val){
+  const a = ST.actions.find(x => x.id === actionId);
+  const ph = a && (a.photos||[]).find(p => p.id === photoId);
+  if (ph) ph.caption = val;
+}
+
 function toggleActionCollapse(id) {
   const a = ST.actions.find(x=>x.id===id);
   if (a) { a.collapsed = !a.collapsed; renderActions(); }
@@ -6923,6 +6988,25 @@ function renderActionCards() {
           <div class="act-body-label">Notes / follow-up</div>
           <textarea class="act-body-input act-body-textarea" placeholder="Any additional context, follow-up steps, or resolution notes…" oninput="updateAction(${a.id},'notes',this.value)">${a.notes||''}</textarea>
         </div>
+        <div class="act-full-row act-body-section">
+          <div class="act-body-label">Photos — drop or click to add (ticked photos appear in the report)</div>
+          <div class="act-photo-drop" id="actDrop-${a.id}"
+            ondragover="event.preventDefault();this.classList.add('drag-over')"
+            ondragleave="this.classList.remove('drag-over')"
+            ondrop="event.preventDefault();this.classList.remove('drag-over');handleActionPhotos(${a.id}, event.dataTransfer.files)"
+            onclick="document.getElementById('actPhotoInput-${a.id}').click()">
+            <span style="font-size:20px">📷</span>
+            <span style="font-size:11px;color:var(--muted)">Drop photos here, or click to browse</span>
+          </div>
+          <input type="file" id="actPhotoInput-${a.id}" accept="image/*" multiple style="display:none" onchange="handleActionPhotos(${a.id}, this.files)">
+          ${(a.photos && a.photos.length) ? `<div class="act-photo-grid">${a.photos.map(ph => `
+            <div class="act-photo">
+              <img src="${ph.dataUrl}" alt="">
+              <button class="act-photo-del" title="Remove photo" onclick="removeActionPhoto(${a.id},${ph.id})">✕</button>
+              <label class="act-photo-inrep"><input type="checkbox" ${ph.inReport!==false?'checked':''} onchange="toggleActionPhotoReport(${a.id},${ph.id})"> in report</label>
+              <input class="act-photo-cap" value="${(ph.caption||'').replace(/"/g,'&quot;')}" placeholder="caption (optional)" oninput="updateActionPhotoCaption(${a.id},${ph.id},this.value)">
+            </div>`).join('')}</div>` : ''}
+        </div>
       </div>
     </div>`;
   }).join('');
@@ -6996,6 +7080,11 @@ function lightSnapshot(snap){
   const out = { ...snap };
   if (Array.isArray(snap.periods)) {
     out.periods = snap.periods.map(p => { const { dailySeries, ...rest } = p; return rest; });
+  }
+  // Action photos are large (data URLs) — keep them out of the localStorage
+  // backups/projects (they're preserved in the saved .htpj project file).
+  if (Array.isArray(snap.actions)) {
+    out.actions = snap.actions.map(a => a && a.photos && a.photos.length ? { ...a, photos: [] } : a);
   }
   return out;
 }
@@ -8236,6 +8325,36 @@ async function generatePDF(){
           sf('normal',FS.small); stxt(GREY_T);
           notesLines.forEach((l,li)=>doc.text(l,ML+6,y+4+(li*4)));
           y+=notesLines.length*4+4;
+        }
+
+        // Photos (only those flagged for the report)
+        const actPhotos = (a.photos||[]).filter(ph => ph.inReport !== false && ph.dataUrl && ph.w && ph.h);
+        if (actPhotos.length) {
+          const imgW = 52, gap = 4, capH = 4;
+          const perRow = Math.max(1, Math.floor(CW / (imgW + gap)));
+          for (let i = 0; i < actPhotos.length; i += perRow) {
+            const rowPhotos = actPhotos.slice(i, i + perRow);
+            const dhs = rowPhotos.map(ph => Math.min(42, imgW * ph.h / ph.w));
+            const anyCap = rowPhotos.some(ph => (ph.caption||'').trim());
+            const rowH = Math.max(...dhs) + (anyCap ? capH : 0) + 2;
+            chk(rowH + 2);
+            let x = ML + 2;
+            rowPhotos.forEach((ph, idx) => {
+              const dh = dhs[idx];
+              try {
+                const fmt = ph.dataUrl.startsWith('data:image/png') ? 'PNG' : 'JPEG';
+                sdraw(BDR); doc.setLineWidth(0.15); doc.rect(x, y, imgW, dh, 'S');
+                doc.addImage(ph.dataUrl, fmt, x+0.3, y+0.3, imgW-0.6, dh-0.6);
+                if ((ph.caption||'').trim()) {
+                  sf('normal',FS.label); stxt(GREY_T);
+                  const cl = doc.splitTextToSize(ph.caption, imgW);
+                  doc.text(cl[0]||'', x, y + dh + 3);
+                }
+              } catch(e) {}
+              x += imgW + gap;
+            });
+            y += rowH + 1;
+          }
         }
 
         y+=2;
