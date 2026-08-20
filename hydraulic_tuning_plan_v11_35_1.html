@@ -336,6 +336,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 .act-photo-inrep{display:flex;align-items:center;gap:4px;font-size:10px;color:var(--muted);padding:5px 6px 0}
 .act-photo-cap{width:100%;border:none;border-top:1px solid var(--border);font-size:11px;padding:5px 6px;font-family:inherit;color:var(--text)}
 .act-photo-cap:focus{outline:none;background:var(--teal-l)}
+.act-log-list{display:flex;flex-direction:column;gap:6px;margin-top:4px}
+.act-log-row{display:flex;gap:6px;align-items:center}
+.act-log-date{flex-shrink:0;width:140px;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:12px;font-family:inherit;color:var(--text);background:#fff}
+.act-log-text{flex:1;border:1px solid var(--border);border-radius:6px;padding:6px 9px;font-size:12px;font-family:inherit;color:var(--text);background:#fff}
+.act-log-text:focus,.act-log-date:focus{outline:none;border-color:var(--teal)}
+.act-log-del{flex-shrink:0;background:#fff;border:1px solid #fca5a5;color:var(--red);border-radius:6px;width:28px;height:30px;cursor:pointer;font-size:12px}
+.act-log-del:hover{background:#fef2f2}
 .act-body-textarea:focus{outline:none;border-color:var(--teal)}
 .act-full-row{grid-column:1/-1}
 .act-head-actions{display:flex;gap:6px;align-items:center;flex-shrink:0}
@@ -6862,6 +6869,31 @@ function updateActionPhotoCaption(actionId, photoId, val){
   if (ph) ph.caption = val;
 }
 
+// ── Action progress log (dated entries) ───────────────────────────────────────
+function todayISO(){
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+function addActionLog(actionId){
+  const a = ST.actions.find(x => x.id === actionId);
+  if (!a) return;
+  if (!a.logEntries) a.logEntries = [];
+  a.logEntries.unshift({ id: Date.now() + Math.floor(Math.random()*100000), date: todayISO(), text: '' });
+  renderActionCards();
+  setTimeout(() => { const t = document.querySelector(`#actCard-${actionId} .act-log-text`); if (t) t.focus(); }, 30);
+}
+function updateActionLog(actionId, entryId, key, val){
+  const a = ST.actions.find(x => x.id === actionId);
+  const e = a && (a.logEntries||[]).find(x => x.id === entryId);
+  if (e){ e[key] = val; if (key === 'date') renderActionCards(); }   // re-sort on date change
+}
+function removeActionLog(actionId, entryId){
+  const a = ST.actions.find(x => x.id === actionId);
+  if (!a || !a.logEntries) return;
+  a.logEntries = a.logEntries.filter(x => x.id !== entryId);
+  renderActionCards();
+}
+
 function toggleActionCollapse(id) {
   const a = ST.actions.find(x=>x.id===id);
   if (a) { a.collapsed = !a.collapsed; renderActions(); }
@@ -6987,6 +7019,20 @@ function renderActionCards() {
         <div class="act-full-row act-body-section">
           <div class="act-body-label">Notes / follow-up</div>
           <textarea class="act-body-input act-body-textarea" placeholder="Any additional context, follow-up steps, or resolution notes…" oninput="updateAction(${a.id},'notes',this.value)">${a.notes||''}</textarea>
+        </div>
+        <div class="act-full-row act-body-section">
+          <div class="act-body-label" style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+            <span>Progress log — dated entries (appears in the report)</span>
+            <button class="btn btn-secondary btn-sm" onclick="addActionLog(${a.id})">+ Add dated entry</button>
+          </div>
+          ${(a.logEntries && a.logEntries.length) ? `<div class="act-log-list">${
+            [...a.logEntries].sort((x,y)=>(y.date||'').localeCompare(x.date||'')).map(e => `
+              <div class="act-log-row">
+                <input type="date" class="act-log-date" value="${e.date||''}" onchange="updateActionLog(${a.id},${e.id},'date',this.value)">
+                <input class="act-log-text" value="${(e.text||'').replace(/"/g,'&quot;')}" placeholder="Progress update…" oninput="updateActionLog(${a.id},${e.id},'text',this.value)">
+                <button class="act-log-del" title="Delete entry" onclick="removeActionLog(${a.id},${e.id})">✕</button>
+              </div>`).join('')
+          }</div>` : '<div style="font-size:11px;color:var(--muted);padding:2px 0">No log entries yet — click "Add dated entry" to record progress.</div>'}
         </div>
         <div class="act-full-row act-body-section">
           <div class="act-body-label">Photos — drop or click to add (ticked photos appear in the report)</div>
@@ -8325,6 +8371,24 @@ async function generatePDF(){
           sf('normal',FS.small); stxt(GREY_T);
           notesLines.forEach((l,li)=>doc.text(l,ML+6,y+4+(li*4)));
           y+=notesLines.length*4+4;
+        }
+
+        // Progress log — dated entries, oldest first
+        const logEntries = (a.logEntries||[]).filter(e => (e.text||'').trim() || e.date)
+          .slice().sort((x,y) => (x.date||'').localeCompare(y.date||''));
+        if (logEntries.length) {
+          chk(6);
+          sf('bold',FS.label); stxt(GREY_T); doc.text('Progress log:', ML+6, y+3.5); y += 5;
+          logEntries.forEach(e => {
+            sf('normal',FS.small);
+            const line = (e.date ? e.date + ' — ' : '') + (e.text||'');
+            const wrapped = doc.splitTextToSize(line, CW - 20);
+            chk(wrapped.length*4 + 3);
+            sfill([245,245,243]); doc.rect(ML, y, CW, wrapped.length*4 + 3, 'F');
+            sf('normal',FS.small); stxt(GREY_T);
+            wrapped.forEach((l,li) => doc.text(l, ML+8, y + 3.5 + (li*4)));
+            y += wrapped.length*4 + 3;
+          });
         }
 
         // Photos (only those flagged for the report)
