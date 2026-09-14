@@ -444,6 +444,21 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 .hi-tag{font-size:9px;font-weight:700;background:#d4820a;color:#fff;padding:1px 6px;border-radius:8px;letter-spacing:0.03em}
 .data-tbl tr.high-usage-row td{background:var(--amber-l)!important}
 .data-tbl tr.high-usage-row td:first-child{box-shadow:inset 3px 0 0 #d4820a}
+/* Charts tab — latest-month ranking + collapsible cards */
+.mh-rank{display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:22px;padding:0 6px;font-size:12px;font-weight:800;background:var(--teal);color:#fff;border-radius:11px;flex-shrink:0}
+.mh-rank.rank-1{background:#d4820a}
+.meter-block-header{cursor:pointer;user-select:none}
+.mh-arrow{display:inline-block;font-size:11px;color:var(--muted);width:14px;text-align:center;flex-shrink:0}
+.charts-controls{display:flex;align-items:center;gap:14px 18px;flex-wrap:wrap;margin-bottom:14px;padding:12px 16px}
+.charts-controls .cc-lead{font-size:13px;font-weight:600}
+.charts-controls select{padding:4px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px;font-weight:700;background:#fff}
+.charts-controls .cc-btn{font-size:12px;font-weight:700;background:var(--grey);border:1px solid var(--border);border-radius:6px;padding:4px 10px;cursor:pointer;color:var(--text)}
+.charts-controls .cc-btn:hover{background:var(--teal-l);border-color:var(--teal);color:var(--teal-d)}
+.top-rank-list{display:flex;flex-wrap:wrap;gap:6px;margin:0;padding:0;list-style:none}
+.top-rank-list li{display:flex;align-items:center;gap:6px;background:#fff;border:1px solid var(--border);border-radius:14px;padding:2px 10px 2px 4px;font-size:12px}
+.top-rank-list .rk{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;font-size:11px;font-weight:800;background:var(--teal);color:#fff;border-radius:10px}
+.top-rank-list li:first-child .rk{background:#d4820a}
+.top-rank-list .rk-val{color:var(--muted)}
 </style>
 </head>
 <body>
@@ -5217,6 +5232,39 @@ function flashLeakAdded(i, msg) {
 // ═══ CHARTS & PER-METER COMMENTARY ══════════════════════════════════════════════
 let chartsPageCharts = [];   // Chart.js instances on the Charts page (destroyed on re-render)
 
+// How many meters to rank as "top consumers" for the latest month (default 5, up to 10).
+let chartsTopN = 5;
+try { const v = parseInt(localStorage.getItem('htp_charts_topn'), 10); if (v >= 1 && v <= 10) chartsTopN = v; } catch(_){}
+function setChartsTopN(n){
+  const v = parseInt(n, 10);
+  chartsTopN = (v >= 1 && v <= 10) ? v : 5;
+  try { localStorage.setItem('htp_charts_topn', String(chartsTopN)); } catch(_){}
+  renderChartsPage();
+}
+
+// Which meter cards are expanded on the Charts page (collapsed by default). Session-only.
+const chartsExpandedKeys = new Set();
+function toggleChartCard(key){
+  if (chartsExpandedKeys.has(key)) chartsExpandedKeys.delete(key);
+  else chartsExpandedKeys.add(key);
+  renderChartsPage();
+}
+function chartsExpandAll(){
+  (window.__chartRows || []).forEach(r => chartsExpandedKeys.add(r.key));
+  renderChartsPage();
+}
+function chartsCollapseAll(){
+  chartsExpandedKeys.clear();
+  renderChartsPage();
+}
+
+// Latest-month consumption for a meter row (last month of the last period).
+function latestMonthValue(row){
+  const pp = row.perPeriod && row.perPeriod[row.perPeriod.length - 1];
+  if (!pp || !pp.vals || !pp.vals.length) return 0;
+  return parseFloat(pp.vals[pp.vals.length - 1]) || 0;
+}
+
 function saveChartCommentary(i, val){
   const row = (window.__chartRows || [])[i];
   if (row) ST.meterCommentary[row.key] = val;
@@ -5246,13 +5294,45 @@ function renderChartsPage(){
   const meanTotal = totalsArr.length ? totalsArr.reduce((s,v)=>s+v,0) / totalsArr.length : 0;
   const maxTotal = Math.max(0, ...totalsArr);
 
-  el.innerHTML = rows.map((row, i) => {
+  // Rank meters by their LATEST-MONTH consumption; the top N get a rank badge.
+  const lastP = ST.periods[ST.periods.length - 1];
+  const latestMonthLabel = (lastP && lastP.months && lastP.months.length)
+    ? lastP.months[lastP.months.length - 1] : '';
+  const N = chartsTopN;
+  const ranked = rows.map((row, i) => ({ i, key: row.key, label: row.label, v: latestMonthValue(row) }))
+    .filter(x => x.v > 0)
+    .sort((a, b) => b.v - a.v)
+    .slice(0, N);
+  const rankMap = {};
+  ranked.forEach((x, idx) => { rankMap[x.i] = idx + 1; });
+
+  const options = [];
+  for (let n = 1; n <= 10; n++) options.push(`<option value="${n}"${n === N ? ' selected' : ''}>${n}</option>`);
+  const rankListHtml = ranked.length
+    ? `<ol class="top-rank-list">${ranked.map((x, idx) =>
+        `<li><span class="rk">${idx + 1}</span><span>${escapeHtml(x.label)}</span><span class="rk-val">${dv(x.v)} ${unit}</span></li>`).join('')}</ol>`
+    : `<span style="font-size:12px;color:var(--muted)">No consumption recorded in the latest month.</span>`;
+
+  const controls = `<div class="card charts-controls">
+    <span class="cc-lead">Rank the top
+      <select onchange="setChartsTopN(this.value)" title="Number of meters to rank">${options.join('')}</select>
+      highest-consuming meters for the latest month${latestMonthLabel ? ' (' + escapeHtml(latestMonthLabel) + ')' : ''}:</span>
+    ${rankListHtml}
+    <span style="margin-left:auto;display:flex;gap:8px">
+      <button class="cc-btn" onclick="chartsExpandAll()">Expand all</button>
+      <button class="cc-btn" onclick="chartsCollapseAll()">Collapse all</button>
+    </span>
+  </div>`;
+
+  el.innerHTML = controls + rows.map((row, i) => {
     const total = totalsArr[i];
     const isTop = rows.length > 1 && total > 0 && total === maxTotal;
     const highUsage = rows.length > 1 && total > 0 && total >= 1.5 * meanTotal;
-    return buildMeterChartCard(row, i, unit, { highUsage, isTop, total });
+    const expanded = chartsExpandedKeys.has(row.key);
+    return buildMeterChartCard(row, i, unit, { highUsage, isTop, total, rank: rankMap[i] || 0, expanded });
   }).join('');
-  rows.forEach((row, i) => instantiateMeterChart(row, i));
+  // Only instantiate charts for expanded cards (Chart.js can't size a hidden canvas).
+  rows.forEach((row, i) => { if (chartsExpandedKeys.has(row.key)) instantiateMeterChart(row, i); });
 }
 
 function buildMeterChartCard(row, i, unit, flags){
@@ -5266,6 +5346,8 @@ function buildMeterChartCard(row, i, unit, flags){
   const commentary = ST.meterCommentary[row.key] || '';
   const highBadge = flags.isTop ? '<span class="mh-high">▲ TOP CONSUMER</span>'
                   : flags.highUsage ? '<span class="mh-high">▲ HIGH USAGE</span>' : '';
+  const rankBadge = flags.rank ? `<span class="mh-rank${flags.rank === 1 ? ' rank-1' : ''}" title="#${flags.rank} highest-consuming meter this month">#${flags.rank}</span>` : '';
+  const expanded = !!flags.expanded;
   const blockCls = (flags.isTop || flags.highUsage) ? ' high-usage' : '';
 
   let tableHtml;
@@ -5301,14 +5383,16 @@ function buildMeterChartCard(row, i, unit, flags){
       </tbody></table>`;
   }
 
-  return `<div class="meter-block${blockCls}">
-    <div class="meter-block-header">
+  return `<div class="meter-block${blockCls}${expanded ? '' : ' is-collapsed'}">
+    <div class="meter-block-header" onclick="toggleChartCard('${String(row.key).replace(/'/g,"\\'")}')">
+      <span class="mh-arrow">${expanded ? '▼' : '▶'}</span>
+      ${rankBadge}
       <span class="mh-name">${escapeHtml(row.label)}</span>
       ${row.isVirtual ? '<span class="mh-virtual">Virtual / system</span>' : ''}
       ${highBadge}
       <span class="mh-loc">${dv(grand)} ${unit} total · ${dv(avg)}/period avg · peak ${escapeHtml(peak.label)}</span>
     </div>
-    <div class="meter-block-body">
+    <div class="meter-block-body"${expanded ? '' : ' hidden'}>
       <div class="meter-chart-wrap" style="margin-bottom:12px"><canvas id="chartsMtr_${i}"></canvas></div>
       <div class="data-tbl-wrap" style="margin-bottom:12px">${tableHtml}</div>
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;flex-wrap:wrap">
