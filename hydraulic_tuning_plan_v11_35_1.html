@@ -458,6 +458,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 .mtr-rank-blank{display:inline-block;min-width:20px;margin-right:7px}
 .data-tbl tr.ranked-row td{background:var(--teal-l)!important}
 .data-tbl tr.ranked-row td:first-child{box-shadow:inset 3px 0 0 var(--teal);font-weight:600}
+/* Inline-editable report text (e.g. Benchmark Comparison intro) */
+.rpt-editable{border:1px dashed transparent;border-radius:4px;padding:2px 4px;margin-left:-4px;cursor:text;transition:border-color .12s,background .12s}
+.rpt-editable:hover{border-color:var(--border);background:rgba(0,0,0,0.015)}
+.rpt-editable:focus{outline:none;border-color:var(--teal);border-style:solid;background:var(--teal-l)}
 </style>
 </head>
 <body>
@@ -1621,11 +1625,24 @@ const ST = {
   lockChecksum: null, // data checksum captured at finalise time (tamper-evidence)
   activeProjectId: null, // id of the launcher project currently loaded (session only)
   meterCommentary: {},   // per-meter commentary keyed by meter key (raw name or __vm_<id>)
+  benchmarkIntro: '',    // editable intro paragraph for the Benchmark Comparison section (blank = default text)
   utilityBills: []       // [{id, label, start:'YYYY-MM-DD', end, billedKL, cost}] — water bills vs metered mains
 };
 let obsFilterActive = 'all';
 
 const COLORS = ['#1a7a5e','#1e5fa8','#d4820a','#9b3a9b','#c0392b','#0e7490','#4a7c59','#7c6b2e','#7c2d12'];
+
+// Default intro paragraph for the Benchmark Comparison section. The user can
+// override it (ST.benchmarkIntro); a blank override falls back to this text.
+const BENCHMARK_INTRO_DEFAULT = 'Each benchmark group lumps the nominated meters together and compares their combined actual consumption against the expected (benchmark) consumption issued for the job. Actual and benchmark are shown side by side, month by month.';
+function benchmarkIntroText(){
+  const t = (ST.benchmarkIntro || '').trim();
+  return t || BENCHMARK_INTRO_DEFAULT;
+}
+function saveBenchmarkIntro(el){
+  const txt = (el.innerText || '').replace(/ /g,' ').trim();
+  ST.benchmarkIntro = (txt === BENCHMARK_INTRO_DEFAULT) ? '' : txt;
+}
 
 // ─── Company logo (embedded, used on PDF cover page) ──────────────────────────
 // Axis Services VIC logo — 585x324px JPEG, aspect ratio ≈ 1.806
@@ -3215,7 +3232,7 @@ function _renderReportInner(out) {
     const secNum6 = 6 + secShift;  // Benchmark Comparison
     html += '<div class="card rpt-section">' +
       '<div class="rpt-h1">' + secNum6 + '\xa0\xa0\xa0Benchmark Comparison</div>' +
-      '<div class="rpt-body" style="margin-bottom:8px">Each benchmark group lumps the nominated meters together and compares their combined actual consumption against the expected (benchmark) consumption issued for the job. Actual and benchmark are shown side by side, month by month.</div>';
+      '<div class="rpt-body rpt-editable" style="margin-bottom:8px" contenteditable="true" spellcheck="true" title="Click to edit this text — it appears in the report and PDF" onblur="saveBenchmarkIntro(this)">' + escapeHtml(benchmarkIntroText()) + '</div>';
 
     // Summary table across all groups. The member list is shown as a compact
     // count (full list on hover) so the table doesn't overflow, and each period's
@@ -5241,6 +5258,16 @@ function setChartsTopN(n){
   renderChartsPage();
 }
 
+// How the individual-meter list inside a virtual meter is ordered:
+// 'input' = as entered, 'desc' = highest→lowest, 'asc' = lowest→highest (by latest month).
+let chartsMemberSort = 'desc';
+try { const s = localStorage.getItem('htp_charts_membersort'); if (['input','desc','asc'].includes(s)) chartsMemberSort = s; } catch(_){}
+function setChartsMemberSort(v){
+  chartsMemberSort = ['input','desc','asc'].includes(v) ? v : 'desc';
+  try { localStorage.setItem('htp_charts_membersort', chartsMemberSort); } catch(_){}
+  renderChartsPage();
+}
+
 // Which meter cards are expanded on the Charts page (collapsed by default). Session-only.
 const chartsExpandedKeys = new Set();
 function toggleChartCard(key){
@@ -5312,10 +5339,18 @@ function renderChartsPage(){
   const options = [];
   for (let n = 1; n <= 10; n++) options.push(`<option value="${n}"${n === N ? ' selected' : ''}>${n}</option>`);
 
+  const sortOpts = [
+    ['desc',  'Highest → lowest'],
+    ['asc',   'Lowest → highest'],
+    ['input', 'Input order']
+  ].map(([v,l]) => `<option value="${v}"${v === chartsMemberSort ? ' selected' : ''}>${l}</option>`).join('');
+
   const controls = `<div class="card charts-controls">
     <span class="cc-lead">Rank the top
       <select onchange="setChartsTopN(this.value)" title="Number of individual meters to rank">${options.join('')}</select>
       highest-consuming individual meters within each virtual meter${latestMonthLabel ? ', for the latest month (' + escapeHtml(latestMonthLabel) + ')' : ''}.</span>
+    <span class="cc-lead">Order the list:
+      <select onchange="setChartsMemberSort(this.value)" title="How to order the individual-meter list">${sortOpts}</select></span>
     <span style="margin-left:auto;display:flex;gap:8px">
       <button class="cc-btn" onclick="chartsExpandAll()">Expand all</button>
       <button class="cc-btn" onclick="chartsCollapseAll()">Collapse all</button>
@@ -5360,10 +5395,16 @@ function buildMeterChartCard(row, i, unit, flags){
       latest: latestMonthMemberValue(m),
       tot: signOf(m) * ST.periods.reduce((s,p)=>s+sumArr(p.series[m]||[]),0)
     }));
-    // Show highest-first so the ranking reads top-to-bottom.
-    const ordered = memInfo.slice().sort((a,b) => b.latest - a.latest);
+    // Ranks are always assigned by latest-month consumption (highest = #1),
+    // independent of how the list is displayed.
+    const byLatestDesc = memInfo.slice().sort((a,b) => b.latest - a.latest);
     const rankOf = {};
-    ordered.filter(x => x.latest > 0).slice(0, N).forEach((x, idx) => { rankOf[x.m] = idx + 1; });
+    byLatestDesc.filter(x => x.latest > 0).slice(0, N).forEach((x, idx) => { rankOf[x.m] = idx + 1; });
+    // Display order follows the user's choice (input order / high→low / low→high).
+    let ordered;
+    if (chartsMemberSort === 'input')      ordered = memInfo.slice();
+    else if (chartsMemberSort === 'asc')   ordered = memInfo.slice().sort((a,b) => a.latest - b.latest);
+    else                                   ordered = byLatestDesc;
     const memberTotals = memInfo.map(x => x.tot);   // original order, for the combined subtotal
     const memberRows = ordered.map(info => {
       const m = info.m, neg = info.neg;
@@ -6580,6 +6621,7 @@ function collectSnapshot() {
     reportUnit: ST.reportUnit,
     obsScope: ST.obsScope,
     meterCommentary: ST.meterCommentary,
+    benchmarkIntro: ST.benchmarkIntro,
     utilityBills: ST.utilityBills,
     locked: ST.locked,
     lockedAt: ST.lockedAt,
@@ -6627,6 +6669,7 @@ function applySnapshot(snap) {
   ST.reportUnit = snap.reportUnit || 'kL';
   ST.obsScope = snap.obsScope || 'all';
   ST.meterCommentary = snap.meterCommentary || {};
+  ST.benchmarkIntro = snap.benchmarkIntro || '';
   ST.utilityBills = snap.utilityBills || [];
   ST.locked = !!snap.locked;
   ST.lockedAt = snap.lockedAt || null;
@@ -8278,7 +8321,7 @@ async function generatePDF(){
       const secNum7bench = secNum6xp + 1 + secShiftPdf;
       secNumObs = secNum7bench + 1;
       sectionHead(`${secNum7bench}`,'Benchmark Comparison');
-      bodyText('Each benchmark group lumps the nominated meters together and compares their combined actual consumption against the expected (benchmark) consumption issued for the job. Actual and benchmark are shown side by side.');
+      bodyText(benchmarkIntroText());
       y+=3;
 
       // 7.1 Summary table — columns fitted to the (landscape) page width.
