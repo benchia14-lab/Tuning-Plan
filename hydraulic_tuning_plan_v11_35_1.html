@@ -7432,34 +7432,31 @@ async function generatePDF(){
     // canvas backing store is already high-resolution. Capture it directly — no
     // resize (which needs an async repaint and would capture a blank frame).
     const hiResCharts = {};
-    // Cap the captured width. On very wide windows the on-screen chart backing
-    // store can be enormous (window width × 3 DPR), and capturing several at full
-    // resolution overflows JS's max string length ("Invalid string length"). A
-    // 1800px cap is ample for an A4 page and keeps the PDF string bounded.
-    // Charts are capped in CSS to a sensible width, so at 3x density their backing
-    // store is ~2300px — under this cap, captured at full resolution (sharp). The
-    // cap only engages for an unexpectedly huge canvas, and uses high-quality
-    // downscaling then. Keeping it bounded also avoids the PDF string overflowing.
-    const CHART_CAP_W = 2600;
+    // Cap the captured width at 1800px (charts render at 3x DPR, so their backing
+    // store can otherwise be huge on wide windows — which both overflows JS's max
+    // string length and bloats the PDF). 1800px is ample for an A4 page.
+    // Charts are captured as JPEG (not PNG): on a white background a line/bar
+    // chart compresses ~15-25x smaller as JPEG with no visible loss at this size,
+    // which keeps the exported PDF small enough to email. 1800px wide stays sharp
+    // when scaled into the ~180mm page width.
+    const CHART_CAP_W = 1800;
+    const CHART_JPEG_Q = 0.82;
     function chartImage(canvasId){
       if(hiResCharts[canvasId]!==undefined) return hiResCharts[canvasId];
       const src = document.getElementById(canvasId);
       let url = null;
-      if(src){
+      if(src && src.width > 0 && src.height > 0){
         try {
-          if (src.width > CHART_CAP_W){
-            const scale = CHART_CAP_W / src.width;
-            const tmp = document.createElement('canvas');
-            tmp.width  = CHART_CAP_W;
-            tmp.height = Math.max(1, Math.round(src.height * scale));
-            const g = tmp.getContext('2d');
-            g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
-            g.fillStyle = '#ffffff'; g.fillRect(0, 0, tmp.width, tmp.height);  // flatten any transparency
-            g.drawImage(src, 0, 0, tmp.width, tmp.height);
-            url = tmp.toDataURL('image/png', 1.0);
-          } else {
-            url = src.toDataURL('image/png', 1.0);
-          }
+          const targetW = Math.max(1, Math.min(src.width, CHART_CAP_W));
+          const scale = targetW / src.width;
+          const tmp = document.createElement('canvas');
+          tmp.width  = Math.max(1, Math.round(targetW));
+          tmp.height = Math.max(1, Math.round(src.height * scale));
+          const g = tmp.getContext('2d');
+          g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+          g.fillStyle = '#ffffff'; g.fillRect(0, 0, tmp.width, tmp.height);  // JPEG has no alpha — flatten to white
+          g.drawImage(src, 0, 0, tmp.width, tmp.height);
+          url = tmp.toDataURL('image/jpeg', CHART_JPEG_Q);
         } catch(e){ url = null; }
       }
       hiResCharts[canvasId] = url;
@@ -7855,7 +7852,7 @@ async function generatePDF(){
     const s3hbarCanvas = document.getElementById('s3_hbar');
     if (s3hbarCanvas) {
       try {
-        const s3img = chartImage('s3_hbar') || s3hbarCanvas.toDataURL('image/png', 0.95);
+        const s3img = chartImage('s3_hbar') || s3hbarCanvas.toDataURL('image/jpeg', 0.82);
         nlp(); // chart page — landscape
         subHead('3.2 System Consumption — Chart View');
         bodyText('Total consumption per metered system across all reporting periods.');
@@ -7863,7 +7860,7 @@ async function generatePDF(){
         const chartH = Math.min(155, Math.max(80, allEffKeysPdf.length * 9));
         sfill(WHITE); sdraw(BDR); doc.setLineWidth(0.2);
         doc.roundedRect(ML, y, CW, chartH, 2, 2, 'FD');
-        doc.addImage(s3img, 'PNG', ML+2, y+2, CW-4, chartH-4);
+        doc.addImage(s3img, 'JPEG', ML+2, y+2, CW-4, chartH-4);
         y += chartH + 4;
       } catch(e) { y += 2; }
     } else {
@@ -7938,10 +7935,10 @@ async function generatePDF(){
           const remain41 = (PH - MB - 11) - y;
           const cH41 = Math.min(55, Math.max(30, remain41 - 4));
           if (remain41 >= 34) {
-            const ptImg = chartImage('ptrend_all') || ptCanvas.toDataURL('image/png', 1.0);
+            const ptImg = chartImage('ptrend_all') || ptCanvas.toDataURL('image/jpeg', 0.82);
             sfill(WHITE); sdraw(BDR); doc.setLineWidth(0.15);
             doc.roundedRect(ML,y,CW,cH41,1.5,1.5,'FD');
-            doc.addImage(ptImg,'PNG',ML+1,y+1,CW-2,cH41-2);
+            doc.addImage(ptImg,'JPEG',ML+1,y+1,CW-2,cH41-2);
             y+=cH41+3;
           }
         } catch(e) { y+=2; }
@@ -8032,10 +8029,10 @@ async function generatePDF(){
           const chartCanvas = document.getElementById(`mtrend_${ci}`);
           if (chartCanvas) {
             try {
-              const imgData = chartImage(`mtrend_${ci}`) || chartCanvas.toDataURL('image/png', 1.0);
+              const imgData = chartImage(`mtrend_${ci}`) || chartCanvas.toDataURL('image/jpeg', 0.82);
               sfill(WHITE); sdraw(BDR); doc.setLineWidth(0.15);
               doc.roundedRect(ML, y, CW, chartH, 1.5, 1.5, 'FD');
-              doc.addImage(imgData, 'PNG', ML+1, y+1, CW-2, chartH-2);
+              doc.addImage(imgData, 'JPEG', ML+1, y+1, CW-2, chartH-2);
               y += chartH + 3;
             } catch(e) { /* skip */ }
           }
@@ -8167,13 +8164,13 @@ async function generatePDF(){
       const cumulCanvas = document.getElementById('cumulChart');
       if (cumulCanvas) {
         try {
-          const cumulImg = chartImage('cumulChart') || cumulCanvas.toDataURL('image/png', 1.0);
+          const cumulImg = chartImage('cumulChart') || cumulCanvas.toDataURL('image/jpeg', 0.82);
           const remain6 = (PH - MB - 11) - y;
           if (remain6 >= 40) {
             const cH6 = Math.min(75, remain6 - 4);
             sfill(WHITE); sdraw(BDR); doc.setLineWidth(0.2);
             doc.roundedRect(ML,y,CW,cH6,2,2,'FD');
-            doc.addImage(cumulImg,'PNG',ML+2,y+2,CW-4,cH6-4);
+            doc.addImage(cumulImg,'JPEG',ML+2,y+2,CW-4,cH6-4);
             y+=cH6+4;
           } else {
             nlp();
@@ -8182,7 +8179,7 @@ async function generatePDF(){
             const cH6b = Math.min(150, PH-y-MB-15);
             sfill(WHITE); sdraw(BDR); doc.setLineWidth(0.2);
             doc.roundedRect(ML,y,CW,cH6b,2,2,'FD');
-            doc.addImage(cumulImg,'PNG',ML+2,y+2,CW-4,cH6b-4);
+            doc.addImage(cumulImg,'JPEG',ML+2,y+2,CW-4,cH6b-4);
             y+=cH6b+4;
           }
         } catch(e) {}
@@ -8376,10 +8373,10 @@ async function generatePDF(){
         const chartH = Math.max(30, Math.min(60, remainH - 2));
         if (remainH < 34) { np(); }
         try {
-          const imgData = chartImage('bmgroupchart_' + row.id) || chartCanvas.toDataURL('image/png', 1.0);
+          const imgData = chartImage('bmgroupchart_' + row.id) || chartCanvas.toDataURL('image/jpeg', 0.82);
           sfill(WHITE); sdraw(BDR); doc.setLineWidth(0.15);
           doc.roundedRect(ML, y, CW, chartH, 1.5, 1.5, 'FD');
-          doc.addImage(imgData, 'PNG', ML+1, y+1, CW-2, chartH-2);
+          doc.addImage(imgData, 'JPEG', ML+1, y+1, CW-2, chartH-2);
           y += chartH + 4;
         } catch(e) { y += 2; }
       });
