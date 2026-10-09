@@ -458,6 +458,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 .mtr-rank-blank{display:inline-block;min-width:20px;margin-right:7px}
 .data-tbl tr.ranked-row td{background:var(--teal-l)!important}
 .data-tbl tr.ranked-row td:first-child{box-shadow:inset 3px 0 0 var(--teal);font-weight:600}
+/* Charts tab — per-meter "include in report" control */
+.meter-block-header .mh-include{display:inline-flex;align-items:center;gap:5px;margin-left:12px;font-size:11px;font-weight:700;color:#fff;cursor:pointer;flex-shrink:0;white-space:nowrap}
+.meter-block-header .mh-include input{cursor:pointer;width:15px;height:15px;accent-color:#fff;margin:0}
+.meter-block-header .mh-excluded{font-size:10px;font-weight:700;background:rgba(255,255,255,0.18);color:#fff;padding:2px 8px;border-radius:10px;letter-spacing:0.03em}
+.meter-block.excluded-from-report{opacity:0.62}
+.meter-block.excluded-from-report .meter-block-header{background:#6b6b64}
 /* Inline-editable report text (e.g. Benchmark Comparison intro) */
 .rpt-editable{border:1px dashed transparent;border-radius:4px;padding:2px 4px;margin-left:-4px;cursor:text;transition:border-color .12s,background .12s}
 .rpt-editable:hover{border-color:var(--border);background:rgba(0,0,0,0.015)}
@@ -1626,6 +1632,7 @@ const ST = {
   activeProjectId: null, // id of the launcher project currently loaded (session only)
   meterCommentary: {},   // per-meter commentary keyed by meter key (raw name or __vm_<id>)
   benchmarkIntro: '',    // editable intro paragraph for the Benchmark Comparison section (blank = default text)
+  chartsExcluded: [],    // meter row keys omitted from the report's per-meter detail section (toggled on Charts tab)
   utilityBills: []       // [{id, label, start:'YYYY-MM-DD', end, billedKL, cost}] — water bills vs metered mains
 };
 let obsFilterActive = 'all';
@@ -3002,7 +3009,7 @@ function _renderReportInner(out) {
 
       <div class="rpt-h2">4.2 Water Usage Trend by Meter — All Periods</div>
       <div class="rpt-body" style="margin-bottom:14px">Monthly consumption per meter across all periods. For any virtual meter with its own benchmark set, the actual usage is shown alongside the monthly benchmark (expected) consumption — as paired bars on the chart and as benchmark/variance columns in the table.</div>
-      ${effectiveMeterRowsCombined().map((row, ci)=>{
+      ${reportMeterRows().map((row, ci)=>{
         const sysInfo = row.sysInfo||{meterId:'',loc:'',isVirtual:false};
         const grandTotal = row.perPeriod.reduce((s,pp)=>s+pp.vals.reduce((a,v)=>a+(v||0),0),0);
         const nMonthsAll = row.perPeriod.reduce((s,pp)=>s+pp.months.length,0);
@@ -3434,7 +3441,7 @@ function _renderReportInner(out) {
     // ── Combined per-meter trend charts (all periods together) ────────────────
     // One chart per meter; each period's bars share a period colour so trends
     // and differences between periods are immediately visible.
-    effectiveMeterRowsCombined().forEach((row,ci)=>{
+    reportMeterRows().forEach((row,ci)=>{
       const ctx = document.getElementById(`mtrend_${ci}`);
       if(!ctx) return;
       // Flatten labels + values across all periods; colour per period
@@ -4148,6 +4155,24 @@ function effectiveMeterRowsCombined() {
   });
   return rows;
 }
+
+// Per-meter report inclusion (toggled on the Charts & commentary tab). Keys are
+// meter row keys (raw meter name or '__vm_<id>'). A key listed in ST.chartsExcluded
+// is omitted from the report's per-meter detail section (its chart, table and
+// commentary) in both the on-screen report and the PDF. It does NOT change combined
+// totals, the systems overview, or benchmarks — only whether this meter gets its
+// own detailed block in the report.
+function isMeterInReport(key){ return !((ST.chartsExcluded || []).includes(key)); }
+function toggleMeterInReport(key, included){
+  ST.chartsExcluded = ST.chartsExcluded || [];
+  const i = ST.chartsExcluded.indexOf(key);
+  if (included){ if (i > -1) ST.chartsExcluded.splice(i, 1); }
+  else { if (i < 0) ST.chartsExcluded.push(key); }
+  renderChartsPage();          // refresh the tab (dim the excluded card)
+  renderReport_ifVisible();    // keep the report in sync
+}
+// Meter rows that should appear in the report's per-meter detail section.
+function reportMeterRows(){ return effectiveMeterRowsCombined().filter(r => isMeterInReport(r.key)); }
 
 // Flat list of effective meter labels across ALL periods (virtual + unclaimed raw).
 function allEffectiveLabels() {
@@ -5380,6 +5405,8 @@ function buildMeterChartCard(row, i, unit, flags){
   const highBadge = flags.isTop ? '<span class="mh-high">▲ TOP CONSUMER</span>'
                   : flags.highUsage ? '<span class="mh-high">▲ HIGH USAGE</span>' : '';
   const expanded = !!flags.expanded;
+  const included = isMeterInReport(row.key);
+  const keyEsc = String(row.key).replace(/'/g,"\\'");
   const blockCls = (flags.isTop || flags.highUsage) ? ' high-usage' : '';
 
   let tableHtml;
@@ -5431,13 +5458,18 @@ function buildMeterChartCard(row, i, unit, flags){
       </tbody></table>`;
   }
 
-  return `<div class="meter-block${blockCls}${expanded ? '' : ' is-collapsed'}">
-    <div class="meter-block-header" onclick="toggleChartCard('${String(row.key).replace(/'/g,"\\'")}')">
+  return `<div class="meter-block${blockCls}${expanded ? '' : ' is-collapsed'}${included ? '' : ' excluded-from-report'}">
+    <div class="meter-block-header" onclick="toggleChartCard('${keyEsc}')">
       <span class="mh-arrow">${expanded ? '▼' : '▶'}</span>
       <span class="mh-name">${escapeHtml(row.label)}</span>
       ${row.isVirtual ? '<span class="mh-virtual">Virtual / system</span>' : ''}
       ${highBadge}
+      ${included ? '' : '<span class="mh-excluded">Not in report</span>'}
       <span class="mh-loc">${dv(grand)} ${unit} total · ${dv(avg)}/period avg · peak ${escapeHtml(peak.label)}</span>
+      <label class="mh-include" title="Include this meter's chart, table and commentary in the report" onclick="event.stopPropagation()">
+        <input type="checkbox" ${included ? 'checked' : ''} onchange="toggleMeterInReport('${keyEsc}', this.checked)">
+        In report
+      </label>
     </div>
     <div class="meter-block-body"${expanded ? '' : ' hidden'}>
       <div class="meter-chart-wrap" style="margin-bottom:12px"><canvas id="chartsMtr_${i}"></canvas></div>
@@ -6622,6 +6654,7 @@ function collectSnapshot() {
     obsScope: ST.obsScope,
     meterCommentary: ST.meterCommentary,
     benchmarkIntro: ST.benchmarkIntro,
+    chartsExcluded: ST.chartsExcluded,
     utilityBills: ST.utilityBills,
     locked: ST.locked,
     lockedAt: ST.lockedAt,
@@ -6670,6 +6703,7 @@ function applySnapshot(snap) {
   ST.obsScope = snap.obsScope || 'all';
   ST.meterCommentary = snap.meterCommentary || {};
   ST.benchmarkIntro = snap.benchmarkIntro || '';
+  ST.chartsExcluded = Array.isArray(snap.chartsExcluded) ? snap.chartsExcluded : [];
   ST.utilityBills = snap.utilityBills || [];
   ST.locked = !!snap.locked;
   ST.lockedAt = snap.lockedAt || null;
@@ -7946,7 +7980,7 @@ async function generatePDF(){
 
       // 4.2 — per-meter combined pages
       subHead('4.2 Water Usage Trend by Meter — All Periods');
-      const combinedRows = effectiveMeterRowsCombined();
+      const combinedRows = reportMeterRows();
       combinedRows.forEach((row, ci)=>{
         const sysInfo = row.sysInfo||{meterId:'',loc:'',isVirtual:false};
         const grandTotal = row.perPeriod.reduce((s,pp)=>s+pp.vals.reduce((a,vv)=>a+(vv||0),0),0);
