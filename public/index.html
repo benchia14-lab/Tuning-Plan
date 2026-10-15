@@ -468,6 +468,25 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 .rpt-editable{border:1px dashed transparent;border-radius:4px;padding:2px 4px;margin-left:-4px;cursor:text;transition:border-color .12s,background .12s}
 .rpt-editable:hover{border-color:var(--border);background:rgba(0,0,0,0.015)}
 .rpt-editable:focus{outline:none;border-color:var(--teal);border-style:solid;background:var(--teal-l)}
+/* Top project bar + settings */
+.proj-bar{position:sticky;top:0;z-index:60;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;background:#fff;border:1px solid var(--border);border-radius:10px;padding:8px 12px;margin:-10px 0 18px;box-shadow:0 2px 8px rgba(20,25,35,0.06)}
+.pb-info{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0}
+.pb-name{font-size:13px;font-weight:700;color:var(--text)}
+.pb-hint{font-size:11px;color:var(--muted)}
+.pb-actions{display:flex;gap:6px;flex-shrink:0}
+.pb-pill{display:inline-block;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;letter-spacing:0.03em;white-space:nowrap}
+.pb-locked{background:var(--amber-l);color:#7c4a03;border:1px solid #f0c675}
+.pb-unlocked{background:var(--teal-l);color:var(--teal-d);border:1px solid #a7d7c5}
+.pb-open{background:var(--grey);color:var(--muted);border:1px solid var(--border)}
+.set-proj{background:var(--grey);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:16px}
+.set-proj-name{font-size:14px;font-weight:700}
+.set-status{font-size:12px;color:var(--muted);margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.set-h{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:var(--text);margin-bottom:6px}
+.set-err{color:var(--red);font-size:12px;min-height:16px;margin-top:4px}
+.set-ok{background:var(--teal-l);color:var(--teal-d);border-radius:8px;padding:8px 12px;font-size:12.5px;margin-bottom:12px}
+/* View-only mode for locked projects */
+body.ro-mode .main input[readonly],body.ro-mode .main textarea[readonly]{background:var(--grey);cursor:default}
+body.ro-mode .main button:disabled,body.ro-mode .main select:disabled,body.ro-mode .main input:disabled{opacity:0.5;cursor:not-allowed}
 </style>
 </head>
 <body>
@@ -506,7 +525,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 
   <div class="sb-bottom">
     <div class="sb-label" style="padding:0 0 6px 0;color:#6b7280">Projects</div>
-    <button class="sb-load-btn" onclick="openProjectLauncher()" style="width:100%;margin-bottom:10px" title="Switch between saved buildings/clients stored in this browser">🗂 Recent projects…</button>
+    <button class="sb-load-btn" onclick="openProjectLauncher()" style="width:100%;margin-bottom:10px" title="Browse the shared projects saved online">🗂 Shared projects…</button>
     <div class="sb-divider" style="margin:0 0 10px 0"></div>
     <div class="sb-label" style="padding:0 0 6px 0;color:#6b7280">Project file</div>
     <button class="sb-save-btn" onclick="saveProjectFile()" title="Download a .htpj file with all your data">Save project file</button>
@@ -530,6 +549,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 
 <!-- MAIN -->
 <div class="main">
+
+  <!-- Top project bar: open project, lock status, save + settings -->
+  <div class="proj-bar" id="projectBar">
+    <div class="pb-info" id="projectBarInfo"></div>
+    <div class="pb-actions">
+      <button class="btn btn-secondary btn-sm" onclick="openProjectLauncher()">🗂 Projects</button>
+      <button class="btn btn-primary btn-sm" id="pbSaveBtn" onclick="saveOnlineChanges()">💾 Save online</button>
+      <button class="btn btn-secondary btn-sm" onclick="openSettings()">⚙ Settings</button>
+    </div>
+  </div>
 
   <!-- ═══ PROJECT PAGE ═══ -->
   <div class="page active" id="page-project">
@@ -6744,14 +6773,23 @@ function applySnapshot(snap) {
   renderRevisions();
   updatePeriodBanner();
   renderLockBanner();
+  // A file, browser backup or anything else loaded here becomes a separate
+  // working copy, no longer tied to the shared project that was open.
+  if (!_applyingOnline) setOnlineProject(null);
 }
 
-// ── Multi-project launcher ────────────────────────────────────────────────────
-// Keeps several named projects (one per building/client) in this browser so you
-// can jump between them without juggling .htpj files. Stored under htp_projects
-// as { id: {id, name, savedAt, snap} }. Never holds the API key (it lives under
-// its own localStorage key and is not part of a snapshot).
-const PROJECTS_KEY = 'htp_projects';
+// ── Shared online projects ────────────────────────────────────────────────────
+// Projects live in the site's database, so everyone sees the same list and can
+// open any of them to view. A project can carry an edit password: without it
+// the project opens view-only and the server refuses to save changes. The edit
+// token returned after entering the password is kept for this browser tab only.
+const API_PROJECTS = '/api/projects';
+const EDIT_TOKENS_KEY = 'htp_edit_tokens';           // sessionStorage: { projectId: token }
+const PROJECTS_KEY = 'htp_projects';                 // legacy browser-only projects (offered for upload)
+const MAX_UPLOAD_CHARS = 5.5 * 1024 * 1024;          // keep requests under the 6 MB function limit
+
+let ONLINE = null;            // { id, name, savedAt, locked } of the open shared project
+let _applyingOnline = false;  // true while applySnapshot() is loading a shared project
 
 function readProjects() {
   try { const o = JSON.parse(localStorage.getItem(PROJECTS_KEY) || '{}'); return (o && typeof o === 'object') ? o : {}; }
@@ -6765,41 +6803,164 @@ function currentProjectName() {
   return (v('buildingName') || '').trim() || 'Untitled project';
 }
 
-function saveCurrentAsProject() {
-  const suggested = currentProjectName();
-  const name = (prompt('Save current work as a project named:', suggested) || '').trim();
-  if (!name) return;
-  const map = readProjects();
-  // Reuse an existing id if the name matches (update in place), else new id.
-  let id = Object.keys(map).find(k => (map[k].name || '').toLowerCase() === name.toLowerCase());
-  if (id && !confirm(`A project called "${name}" already exists. Overwrite it with the current data?`)) return;
-  id = id || ('proj_' + Date.now().toString(36));
-  map[id] = { id, name, savedAt: new Date().toISOString(), snap: lightSnapshot(collectSnapshot()) };
-  if (!writeProjects(map)) { alert('Could not save to browser — storage is full. Use "Save project file" to download a .htpj instead (unlimited size), or remove old browser projects.'); return; }
-  ST.activeProjectId = id;
-  openProjectLauncher();   // refresh the list
+function readEditTokens() {
+  try { const o = JSON.parse(sessionStorage.getItem(EDIT_TOKENS_KEY) || '{}'); return (o && typeof o === 'object') ? o : {}; }
+  catch(_) { return {}; }
+}
+function getEditToken(id) {
+  const t = readEditTokens()[id];
+  return t && Number(String(t).split('.')[0]) > Date.now() ? t : null;
+}
+function setEditToken(id, token) {
+  const map = readEditTokens();
+  if (token) map[id] = token; else delete map[id];
+  try { sessionStorage.setItem(EDIT_TOKENS_KEY, JSON.stringify(map)); } catch(_) {}
 }
 
-function updateProject(id) {
-  const map = readProjects();
-  if (!map[id]) return;
-  if (!confirm(`Overwrite "${map[id].name}" with the current data?`)) return;
-  map[id] = { ...map[id], savedAt: new Date().toISOString(), snap: lightSnapshot(collectSnapshot()) };
-  if (!writeProjects(map)) { alert('Could not save to browser — storage is full. Use "Save project file" to download a .htpj instead.'); return; }
-  ST.activeProjectId = id;
-  openProjectLauncher();
+function isReadOnly() { return !!(ONLINE && ONLINE.locked && !getEditToken(ONLINE.id)); }
+
+async function apiProjects(path, opts = {}) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (opts.token) headers['X-Edit-Token'] = opts.token;
+  const res = await fetch(API_PROJECTS + path, {
+    method: opts.method || 'GET',
+    headers,
+    body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined
+  });
+  let data = null;
+  try { data = await res.json(); } catch(_) {}
+  if (!res.ok) {
+    const err = new Error((data && data.error) || `Request failed (${res.status})`);
+    err.status = res.status;
+    throw err;
+  }
+  return data;
 }
 
-function openProject(id) {
-  const map = readProjects();
-  const proj = map[id];
-  if (!proj) return;
-  if (!confirm(`Open "${proj.name}"?\n\nThis replaces your current unsaved work — save it as a project first if you need it.`)) return;
+// Full snapshot when it fits in one request; otherwise the lighter one used for
+// browser backups (no daily breakdown or action photos — the .htpj keeps those).
+function snapshotForUpload(snap) {
+  const full = snap || collectSnapshot();
+  if (JSON.stringify(full).length <= MAX_UPLOAD_CHARS) return { snap: full, trimmed: false };
+  const light = lightSnapshot(full);
+  if (JSON.stringify(light).length <= MAX_UPLOAD_CHARS) return { snap: light, trimmed: true };
+  throw new Error('This project is too large to save online. Use "Save project file" to download a .htpj instead.');
+}
+const TRIMMED_NOTE = '\n\nNote: the project was too large to store in full, so the daily breakdown and action photos were left out of the online copy. Keep a .htpj project file for the complete data.';
+
+function setOnlineProject(meta) {
+  ONLINE = meta ? { id: meta.id, name: meta.name, savedAt: meta.savedAt, locked: !!meta.locked } : null;
+  ST.activeProjectId = ONLINE ? ONLINE.id : null;
+  applyReadOnlyMode();
+  renderProjectBar();
+}
+
+// Ask for a project's password in a small modal; resolves to an edit token or null.
+function requestEditToken(id, name) {
+  const existing = getEditToken(id);
+  if (existing) return Promise.resolve(existing);
+  return new Promise(resolve => {
+    const old = document.getElementById('pwModalOverlay'); if (old) old.remove();
+    document.body.insertAdjacentHTML('beforeend', `<div id="pwModalOverlay" class="bk-overlay" style="z-index:1100">
+      <div class="bk-modal" style="max-width:400px">
+        <div class="bk-head">🔒 Password required
+          <button class="bk-close" data-pw="cancel">&times;</button>
+        </div>
+        <div class="bk-body">
+          <p class="bk-note">"${escapeHtml(name || 'This project')}" is locked for editing. Enter its password to continue.</p>
+          <div class="fg"><label>Password</label><input type="password" id="pwModalInput" autocomplete="current-password"/></div>
+          <div id="pwModalErr" class="set-err"></div>
+        </div>
+        <div class="iv-foot">
+          <button class="btn btn-secondary" data-pw="cancel">Cancel</button>
+          <button class="btn btn-primary" data-pw="ok">Unlock</button>
+        </div>
+      </div></div>`);
+    const ov = document.getElementById('pwModalOverlay');
+    const input = document.getElementById('pwModalInput');
+    const done = tok => { ov.remove(); resolve(tok); };
+    const submit = async () => {
+      const errEl = document.getElementById('pwModalErr');
+      errEl.textContent = '';
+      try {
+        const { token } = await apiProjects(`/${encodeURIComponent(id)}/unlock`, { method: 'POST', body: { password: input.value } });
+        setEditToken(id, token);
+        if (ONLINE && ONLINE.id === id) { applyReadOnlyMode(); renderProjectBar(); }
+        done(token);
+      } catch(err) { errEl.textContent = err.message; input.select(); }
+    };
+    ov.addEventListener('click', e => {
+      const act = e.target.dataset && e.target.dataset.pw;
+      if (act === 'cancel' || e.target === ov) done(null);
+      else if (act === 'ok') submit();
+    });
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+    input.focus();
+  });
+}
+
+async function saveCurrentAsProject(opts = {}) {
+  const name = (opts.name || prompt('Save current work as a shared project named:', currentProjectName()) || '').trim();
+  if (!name) return null;
   try {
-    applySnapshot(proj.snap);
-    ST.activeProjectId = id;
+    const { snap, trimmed } = snapshotForUpload();
+    const created = await apiProjects('', { method: 'POST', body: { name, snap, password: opts.password || undefined } });
+    // A password set at creation locks editing straight away.
+    setEditToken(created.id, null);
+    setOnlineProject(created);
+    setLastSaved(`Saved shared project: ${created.name}`);
+    if (trimmed) alert('Saved.' + TRIMMED_NOTE);
+    if (!opts.fromSettings) openProjectLauncher();
+    return created;
+  } catch(err) {
+    alert('Could not save the project online:\n\n' + err.message);
+    return null;
+  }
+}
+
+async function updateProject(id, opts = {}) {
+  const target = id === (ONLINE && ONLINE.id) ? ONLINE : null;
+  const name = (target && target.name) || opts.name || 'this project';
+  if (!opts.skipConfirm && !confirm(`Overwrite "${name}" with the current data?`)) return false;
+  let token = getEditToken(id);
+  if (opts.locked || (target && target.locked)) {
+    token = await requestEditToken(id, name);
+    if (!token) return false;
+  }
+  try {
+    const { snap, trimmed } = snapshotForUpload();
+    const saved = await apiProjects(`/${encodeURIComponent(id)}`, { method: 'PUT', token, body: { snap } });
+    setOnlineProject(saved);
+    setLastSaved(`Saved to shared project: ${saved.name} (${new Date(saved.savedAt).toLocaleTimeString('en-AU')})`);
+    if (trimmed) alert('Saved.' + TRIMMED_NOTE);
+    if (opts.refreshLauncher) openProjectLauncher();
+    return true;
+  } catch(err) {
+    if (err.status === 403) {
+      // Token expired or password changed elsewhere — ask again next time.
+      setEditToken(id, null);
+      applyReadOnlyMode(); renderProjectBar();
+    }
+    alert('Could not save changes:\n\n' + err.message);
+    return false;
+  }
+}
+
+// Top-bar "Save" — save into the open shared project, or create one.
+function saveOnlineChanges() {
+  if (!ONLINE) return saveCurrentAsProject();
+  return updateProject(ONLINE.id, { skipConfirm: true });
+}
+
+async function openProject(id) {
+  if (!confirm('Open this project?\n\nThis replaces your current unsaved work — save it first if you need it.')) return;
+  try {
+    const proj = await apiProjects(`/${encodeURIComponent(id)}`);
+    _applyingOnline = true;
+    try { applySnapshot(proj.snap); } finally { _applyingOnline = false; }
+    setOnlineProject(proj);
     const ov = document.getElementById('projectModalOverlay'); if (ov) ov.remove();
-    setLastSaved(`Opened project: ${proj.name}`);
+    setLastSaved(`Opened project: ${proj.name}${isReadOnly() ? ' (view only)' : ''}`);
     showPage('report');
     if (ST.periods.length) generateReport();
   } catch(err) {
@@ -6807,55 +6968,316 @@ function openProject(id) {
   }
 }
 
-function deleteProject(id) {
-  const map = readProjects();
-  if (!map[id]) return;
-  if (!confirm(`Delete the saved project "${map[id].name}"?\n\nThis only removes it from this browser; any .htpj file you exported is unaffected.`)) return;
-  delete map[id];
-  writeProjects(map);
-  if (ST.activeProjectId === id) ST.activeProjectId = null;
+async function deleteProject(id, name, locked) {
+  if (!confirm(`Delete the shared project "${name}"?\n\nThis removes it for everyone. Any .htpj file you exported is unaffected.`)) return;
+  let token = getEditToken(id);
+  if (locked) { token = await requestEditToken(id, name); if (!token) return; }
+  try {
+    await apiProjects(`/${encodeURIComponent(id)}`, { method: 'DELETE', token });
+    setEditToken(id, null);
+    if (ONLINE && ONLINE.id === id) setOnlineProject(null);
+  } catch(err) {
+    if (err.status === 403) setEditToken(id, null);
+    alert('Could not delete the project:\n\n' + err.message);
+  }
   openProjectLauncher();
 }
 
-function openProjectLauncher() {
-  const old = document.getElementById('projectModalOverlay');
-  if (old) old.remove();
+// Move a project that was only stored in this browser into the shared list.
+async function uploadLocalProject(localId) {
   const map = readProjects();
-  const list = Object.values(map).sort((a,b) => (b.savedAt||'').localeCompare(a.savedAt||''));
+  const p = map[localId];
+  if (!p) return;
+  try {
+    const { snap } = snapshotForUpload(p.snap);
+    await apiProjects('', { method: 'POST', body: { name: p.name, snap } });
+    delete map[localId];
+    writeProjects(map);
+  } catch(err) {
+    alert('Could not upload that project:\n\n' + err.message);
+  }
+  openProjectLauncher();
+}
 
-  const rows = list.length ? list.map(p => {
-    const when = p.savedAt ? new Date(p.savedAt).toLocaleString('en-AU') : 'unknown';
-    const np = (p.snap && p.snap.periods || []).length;
-    const ns = (p.snap && p.snap.systems || []).length;
-    const active = p.id === ST.activeProjectId;
-    return `<div class="bk-row">
-      <div class="bk-meta">
-        <div class="bk-when">${active ? '<span class="bk-latest">OPEN</span>' : ''}${escapeHtml(p.name)}</div>
-        <div class="bk-sub">${np} period(s), ${ns} system(s) · saved ${when}</div>
-      </div>
-      <div style="display:flex;gap:6px;flex-shrink:0">
-        <button class="btn btn-primary btn-sm" onclick="openProject('${p.id}')">Open</button>
-        <button class="btn btn-secondary btn-sm" onclick="updateProject('${p.id}')" title="Overwrite with current data">Update</button>
-        <button class="btn btn-danger btn-sm" onclick="deleteProject('${p.id}')">Delete</button>
-      </div>
-    </div>`;
-  }).join('') : `<p class="bk-note">No saved projects yet. Click "Save current as project" to store this building here.</p>`;
-
-  const html = `<div id="projectModalOverlay" class="bk-overlay" onclick="if(event.target===this)this.remove()">
-    <div class="bk-modal">
-      <div class="bk-head">Recent projects
+function projectLauncherShell(body) {
+  return `<div id="projectModalOverlay" class="bk-overlay" onclick="if(event.target===this)this.remove()">
+    <div class="bk-modal" style="max-width:600px">
+      <div class="bk-head">Shared projects
         <button class="bk-close" onclick="document.getElementById('projectModalOverlay').remove()">&times;</button>
       </div>
       <div class="bk-body">
-        <p class="bk-note">Projects saved in this browser. Each is a full snapshot of a building/client — open one to switch to it. Opening replaces your current unsaved work.</p>
-        ${rows}
+        <p class="bk-note">Projects saved online — everyone using this site sees the same list and can open any project to view it. Projects marked 🔒 need their password before changes can be saved. Opening replaces your current unsaved work.</p>
+        ${body}
       </div>
       <div class="iv-foot">
-        <button class="btn btn-primary" onclick="saveCurrentAsProject()">+ Save current as project</button>
+        <button class="btn btn-primary" onclick="saveCurrentAsProject()">+ Save current as new project</button>
       </div>
     </div></div>`;
-  document.body.insertAdjacentHTML('beforeend', html);
 }
+
+async function openProjectLauncher() {
+  const old = document.getElementById('projectModalOverlay');
+  if (old) old.remove();
+  document.body.insertAdjacentHTML('beforeend', projectLauncherShell('<p class="bk-note">Loading projects…</p>'));
+
+  let list;
+  try { list = await apiProjects(''); }
+  catch(err) {
+    const ov = document.getElementById('projectModalOverlay');
+    if (ov) ov.querySelector('.bk-body').innerHTML = `<p class="bk-note" style="color:var(--red)">Could not load projects: ${escapeHtml(err.message)}</p>`;
+    return;
+  }
+
+  const rows = list.length ? list.map(p => {
+    const when = p.savedAt ? new Date(p.savedAt).toLocaleString('en-AU') : 'unknown';
+    const active = ONLINE && p.id === ONLINE.id;
+    const idJs = escapeHtml(JSON.stringify(p.id));
+    const nameJs = escapeHtml(JSON.stringify(p.name));
+    return `<div class="bk-row">
+      <div class="bk-meta">
+        <div class="bk-when">${active ? '<span class="bk-latest">OPEN</span>' : ''}${p.locked ? '<span title="Password protected">🔒</span>' : ''}${escapeHtml(p.name)}</div>
+        <div class="bk-sub">${p.periodCount} period(s), ${p.systemCount} system(s) · saved ${when}${p.locked ? ' · editing locked' : ''}</div>
+      </div>
+      <div style="display:flex;gap:6px;flex-shrink:0">
+        <button class="btn btn-primary btn-sm" onclick="openProject(${idJs})">Open</button>
+        <button class="btn btn-secondary btn-sm" onclick="updateProject(${idJs}, {name:${nameJs}, locked:${p.locked}, refreshLauncher:true})" title="Overwrite with current data">Update</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteProject(${idJs}, ${nameJs}, ${p.locked})">Delete</button>
+      </div>
+    </div>`;
+  }).join('') : `<p class="bk-note">No shared projects yet. Click "Save current as new project" to add this building.</p>`;
+
+  const local = Object.values(readProjects());
+  const localRows = local.length ? `
+    <div class="sb-label" style="color:var(--muted);margin:16px 0 8px">Saved only in this browser</div>
+    <p class="bk-note">These were saved before projects moved online. Upload them so others can see them.</p>
+    ${local.map(p => `<div class="bk-row">
+      <div class="bk-meta">
+        <div class="bk-when">${escapeHtml(p.name || 'Untitled project')}</div>
+        <div class="bk-sub">saved ${p.savedAt ? new Date(p.savedAt).toLocaleString('en-AU') : 'unknown'}</div>
+      </div>
+      <button class="btn btn-secondary btn-sm" onclick="uploadLocalProject(${escapeHtml(JSON.stringify(p.id))})">Upload</button>
+    </div>`).join('')}` : '';
+
+  const ov = document.getElementById('projectModalOverlay');
+  if (ov) ov.querySelector('.bk-body').innerHTML = ov.querySelector('.bk-note').outerHTML + rows + localRows;
+}
+
+// ── Settings: per-project edit password ───────────────────────────────────────
+function openSettings(message) {
+  const old = document.getElementById('settingsModalOverlay');
+  if (old) old.remove();
+  const msg = message ? `<div class="set-ok">${escapeHtml(message)}</div>` : '';
+  let body;
+
+  if (!ONLINE) {
+    body = `
+      <p class="bk-note">The work on screen isn't saved as a shared project yet, so there's nothing to password protect. Save it online first — you can set an edit password at the same time.</p>
+      <div class="fg"><label>Project name</label><input type="text" id="setNewName" value="${escapeHtml(currentProjectName())}"/></div>
+      <div class="fg"><label>Edit password (optional)</label><input type="password" id="setPw1" autocomplete="new-password" placeholder="Leave blank for no password"/></div>
+      <div class="fg"><label>Confirm password</label><input type="password" id="setPw2" autocomplete="new-password"/></div>
+      <div id="setErr" class="set-err"></div>
+      <div class="btn-row" style="margin-top:6px"><button class="btn btn-primary" onclick="settingsCreateProject()">Save as shared project</button>
+      <button class="btn btn-secondary" onclick="document.getElementById('settingsModalOverlay').remove();openProjectLauncher()">Browse projects</button></div>`;
+  } else {
+    const ro = isReadOnly();
+    const status = !ONLINE.locked
+      ? '<span class="pb-pill pb-open">Not password protected</span> Anyone can edit and save this project.'
+      : ro
+        ? '<span class="pb-pill pb-locked">🔒 View only</span> Enter the password to edit and save.'
+        : '<span class="pb-pill pb-unlocked">🔓 Editing unlocked</span> You can edit and save in this browser tab.';
+    let section;
+    if (!ONLINE.locked) {
+      section = `
+        <div class="set-h">Set an edit password</div>
+        <p class="bk-note">Once set, everyone can still open and view this project, but nobody can change it without the password.</p>
+        <div class="fg"><label>New password</label><input type="password" id="setPw1" autocomplete="new-password"/></div>
+        <div class="fg"><label>Confirm password</label><input type="password" id="setPw2" autocomplete="new-password"/></div>
+        <div id="setErr" class="set-err"></div>
+        <div class="btn-row" style="margin-top:6px"><button class="btn btn-primary" onclick="settingsSetPassword(true)">🔒 Set password &amp; lock editing</button></div>`;
+    } else if (ro) {
+      section = `
+        <div class="set-h">Unlock editing</div>
+        <div class="fg"><label>Password</label><input type="password" id="setUnlockPw" autocomplete="current-password" onkeydown="if(event.key==='Enter')settingsUnlock()"/></div>
+        <div id="setErr" class="set-err"></div>
+        <div class="btn-row" style="margin-top:6px"><button class="btn btn-primary" onclick="settingsUnlock()">🔓 Unlock editing</button></div>`;
+    } else {
+      section = `
+        <div class="btn-row" style="margin-top:0"><button class="btn btn-primary" onclick="settingsLockNow()">🔒 Lock editing now</button></div>
+        <div class="set-h" style="margin-top:18px">Change password</div>
+        <div class="fg"><label>New password</label><input type="password" id="setPw1" autocomplete="new-password"/></div>
+        <div class="fg"><label>Confirm password</label><input type="password" id="setPw2" autocomplete="new-password"/></div>
+        <div id="setErr" class="set-err"></div>
+        <div class="btn-row" style="margin-top:6px">
+          <button class="btn btn-secondary" onclick="settingsSetPassword(false)">Change password</button>
+          <button class="btn btn-danger" onclick="settingsRemovePassword()">Remove password</button>
+        </div>`;
+    }
+    body = `
+      <div class="set-proj"><div class="set-proj-name">${escapeHtml(ONLINE.name)}</div>
+        <div class="bk-sub">Last saved ${ONLINE.savedAt ? new Date(ONLINE.savedAt).toLocaleString('en-AU') : 'unknown'}</div>
+        <div class="set-status">${status}</div></div>
+      ${section}`;
+  }
+
+  document.body.insertAdjacentHTML('beforeend', `<div id="settingsModalOverlay" class="bk-overlay" onclick="if(event.target===this)this.remove()">
+    <div class="bk-modal" style="max-width:460px">
+      <div class="bk-head">⚙ Project settings
+        <button class="bk-close" onclick="document.getElementById('settingsModalOverlay').remove()">&times;</button>
+      </div>
+      <div class="bk-body">${msg}${body}</div>
+    </div></div>`);
+  const first = document.querySelector('#settingsModalOverlay input');
+  if (first) first.focus();
+}
+
+function settingsError(text) {
+  const el = document.getElementById('setErr');
+  if (el) el.textContent = text;
+}
+
+function readNewPassword() {
+  const p1 = (document.getElementById('setPw1') || {}).value || '';
+  const p2 = (document.getElementById('setPw2') || {}).value || '';
+  if (p1 !== p2) { settingsError('The passwords do not match.'); return null; }
+  if (p1 && p1.length < 4) { settingsError('Use at least 4 characters.'); return null; }
+  return p1;
+}
+
+async function settingsCreateProject() {
+  const name = (document.getElementById('setNewName').value || '').trim();
+  if (!name) { settingsError('Enter a project name.'); return; }
+  const password = readNewPassword();
+  if (password === null) return;
+  const created = await saveCurrentAsProject({ name, password, fromSettings: true });
+  if (created) openSettings(password ? 'Saved online. Editing is now locked — enter the password to make changes.' : 'Saved online.');
+}
+
+async function settingsUnlock() {
+  const pw = document.getElementById('setUnlockPw').value;
+  if (!pw) { settingsError('Enter the password.'); return; }
+  try {
+    const { token } = await apiProjects(`/${encodeURIComponent(ONLINE.id)}/unlock`, { method: 'POST', body: { password: pw } });
+    setEditToken(ONLINE.id, token);
+    applyReadOnlyMode(); renderProjectBar();
+    openSettings('Editing unlocked. Remember to save your changes.');
+  } catch(err) { settingsError(err.message); }
+}
+
+function settingsLockNow() {
+  setEditToken(ONLINE.id, null);
+  applyReadOnlyMode(); renderProjectBar();
+  openSettings('Editing locked. The project is now view only.');
+}
+
+async function settingsSetPassword(lockAfter) {
+  const password = readNewPassword();
+  if (password === null) return;
+  if (!password) { settingsError('Enter a password.'); return; }
+  try {
+    const res = await apiProjects(`/${encodeURIComponent(ONLINE.id)}/password`, { method: 'POST', token: getEditToken(ONLINE.id), body: { password } });
+    setEditToken(ONLINE.id, lockAfter ? null : res.token);
+    setOnlineProject({ ...ONLINE, locked: true });
+    openSettings(lockAfter ? 'Password set. Editing is now locked — anyone can view, but changes need the password.' : 'Password changed.');
+  } catch(err) { settingsError(err.message); }
+}
+
+async function settingsRemovePassword() {
+  if (!confirm(`Remove the password from "${ONLINE.name}"?\n\nAnyone will be able to edit and save it.`)) return;
+  try {
+    await apiProjects(`/${encodeURIComponent(ONLINE.id)}/password`, { method: 'POST', token: getEditToken(ONLINE.id), body: { password: '' } });
+    setEditToken(ONLINE.id, null);
+    setOnlineProject({ ...ONLINE, locked: false });
+    openSettings('Password removed.');
+  } catch(err) { settingsError(err.message); }
+}
+
+// ── Top project bar ───────────────────────────────────────────────────────────
+function renderProjectBar() {
+  const info = document.getElementById('projectBarInfo');
+  const save = document.getElementById('pbSaveBtn');
+  if (!info || !save) return;
+  if (!ONLINE) {
+    info.innerHTML = '<span class="pb-name">Working copy</span><span class="pb-hint">Not saved as a shared project</span>';
+    save.textContent = '💾 Save online';
+    save.style.display = '';
+  } else {
+    const ro = isReadOnly();
+    const pill = !ONLINE.locked ? '<span class="pb-pill pb-open">Not password protected</span>'
+      : ro ? '<span class="pb-pill pb-locked">🔒 View only</span>'
+      : '<span class="pb-pill pb-unlocked">🔓 Editing unlocked</span>';
+    info.innerHTML = `<span class="pb-name">${escapeHtml(ONLINE.name)}</span>${pill}` +
+      (ro ? '<span class="pb-hint">Open Settings and enter the password to edit</span>' : '');
+    save.textContent = '💾 Save changes';
+    save.style.display = ro ? 'none' : '';
+  }
+}
+
+// ── View-only mode ────────────────────────────────────────────────────────────
+// While a locked project is open without its password, every control in the
+// main area that changes project data is disabled (text fields become read-only
+// so they can still be read and scrolled). Navigation, expanding/collapsing,
+// filters, report preview and PDF/spreadsheet export stay available, as do the
+// browser-only AI-key and logo settings. The server rejects saves regardless.
+const RO_ALLOW = /^(showPage|toggle(PeriodEdit|ActionCollapse|VmCollapse|ObsNotes|ChartCard|ApiKeyVisibility)|setObsFilter|setActFilter|renderReport|generateReport|generatePDF|exportReconciledData|chartsExpandAll|chartsCollapseAll|setChartsTopN|setChartsMemberSort|saveApiKey|clearApiKey|saveAiModel|setActiveBranding|addBrandingPreset|deleteActiveBranding|event\.stopPropagation)\b/;
+const RO_ALLOW_IDS = new Set(['aiApiKeyInput', 'aiModelSelect', 'brandingSelect']);
+const RO_TEXT_TYPES = new Set(['text', 'number', 'date', 'email', 'search', 'tel', 'url', 'time', 'month', 'week', 'datetime-local', 'password']);
+
+function roAllowed(el) {
+  if (RO_ALLOW_IDS.has(el.id) || el.closest('#projectBar, [data-ro-ok]')) return true;
+  const h = (el.getAttribute('onclick') || el.getAttribute('onchange') || el.getAttribute('oninput') || '').trim();
+  return !!h && RO_ALLOW.test(h);
+}
+
+function applyReadOnlyMode() {
+  const ro = isReadOnly();
+  document.body.classList.toggle('ro-mode', ro);
+  const main = document.querySelector('.main');
+  if (!main) return;
+  if (ro) {
+    main.querySelectorAll('input, select, textarea, button').forEach(el => {
+      if (el.dataset.roLock || roAllowed(el)) return;
+      const textual = el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && RO_TEXT_TYPES.has(el.type));
+      if (textual) { if (el.readOnly) return; el.readOnly = true; el.dataset.roLock = 'r'; }
+      else { if (el.disabled) return; el.disabled = true; el.dataset.roLock = 'd'; }
+    });
+    main.querySelectorAll('[contenteditable="true"]').forEach(el => {
+      el.setAttribute('contenteditable', 'false'); el.dataset.roLock = 'ce';
+    });
+  } else {
+    main.querySelectorAll('[data-ro-lock]').forEach(el => {
+      const kind = el.dataset.roLock;
+      if (kind === 'r') el.readOnly = false;
+      else if (kind === 'd') el.disabled = false;
+      else if (kind === 'ce') el.setAttribute('contenteditable', 'true');
+      delete el.dataset.roLock;
+    });
+  }
+}
+
+// Pages re-render their controls often — re-apply the lock to anything new.
+(function initReadOnlyGuard() {
+  const main = document.querySelector('.main');
+  if (!main) return;
+  let queued = false;
+  new MutationObserver(() => {
+    if (queued || !isReadOnly()) return;
+    queued = true;
+    requestAnimationFrame(() => { queued = false; applyReadOnlyMode(); });
+  }).observe(main, { childList: true, subtree: true });
+
+  // Clickable non-form elements (e.g. cards with an onclick that edits data),
+  // drag-to-reorder and file drops are blocked too.
+  const block = e => {
+    if (!isReadOnly() || !main.contains(e.target) || e.target.closest('#projectBar')) return;
+    if (e.type === 'click') {
+      const el = e.target.closest('[onclick]');
+      if (!el || !main.contains(el) || roAllowed(el)) return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+  };
+  ['click', 'dragstart', 'drop'].forEach(t => document.addEventListener(t, block, true));
+})();
 
 // ── Branding / letterhead presets ─────────────────────────────────────────────
 // The active logo (used on the report cover and PDF) can be switched between the
@@ -8659,6 +9081,7 @@ async function generatePDF(){
 // ─── Initial render of browser-stored UI (branding + lock state) ─────────────
 renderBrandingControls();
 renderLockBanner();
+renderProjectBar();
 </script>
 </body>
 </html>
