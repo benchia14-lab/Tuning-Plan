@@ -4,61 +4,6 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Hydraulic Services Tuning Report</title>
-<link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAMAAABEpIrGAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAL6UExURf////r6+vX09f7+/vv7++3s7fr5+vz7++bk5v38/eLf4e3r7Pj4+O/u7+fn6OXk5evr7Pz8/ODe4OTi4/Pz89fW17a2uJ6eoZGQlYuKj4mJjY6NkpiYnKmnq726vff39/Hx8cXFx5mZnISEiICBhYCChoGChoCChYeHi6+use3t7dPS1JqanH+ChoGBhYGChYCBhoGBhqGfo+7t7rSztoeGi7OxtOnp6qOipYKBhoqJjeHg4erq6p6coIGChIGBhMC/wPLy8qSkp6uqrbe2uYSDiJqZnYaGioSFiZybn6Cgo5ubnouJjpuanp+eopKQlYmIjaCeoq2rroKCh6Sjpvr6+9jX2IeHipaVmYWFibOxtfDw8ODf4ZWRltfW2MjHypWTmMTDxff297u3u8XDxsvKzK+tsdPR042MkKmorPb296GhpbSytsLAw4CAhr++wfT09L+8v767v4iIjKurrfb29qimquXk5sjHyYSEibu6vdjW2ISEioqKj767wNbT1ubm54yLkIyMkPPy85uZnqurrKKgpczLztXU1ZyanoOEiNbU1v39/bGxtKemqtXU1tHP0fn5+aakqMzLzfz7/L29v6qqrIyLj8bEx+zr7PTz9JaXm4GCh7OztquprO3t7s3MzoKChq6usb+9wdLQ0/Lx8p2cn6uqrIKBh7Gvsvj3+KunrOrp6o2Nkqinq5OSloWGitva3LGws+bl5p6coaqnrN/e36SgpcjGyMPAw9zb3a2sr7SxteDf4KyorOfm6I2NkaSkpq+vsZGRlKqprdnY2uDg4bOytZWVma+vsrCws7KxtKqorKmoq7Wzt5yZn+jn6ICBhKCgpJqYnIGAhbm3u5aWmtfX2KOipn+ChbKws4GAhoyKj6yrr+Pi5I+Nk7+9wLWztouIjsG+wcvKzYeHjauprbq4u4aFiYODh9rZ24iHi52cnszKzOXj5b27vZ6cn4eFiomHjY+Nkp2bn7e0uOnp6eHg4N7d3eLh4uvq6+zs7fb19vn4+ScEhUkAAAABYktHRACIBR1IAAAAB3RJTUUH6goPFi4FCh640gAAAklJREFUOMtjYMANGJmYGfABFlY2vPLsHEx45Tm5uLFLMPPw8vELMAkKCWNzALOIqJi4hKSUtIysnDwWeQVFJWUVVTUgUFXX0NTC8JW2jpquqroeUF7fQNXQ0MgYTbuJqaoqUBxkgrohkDY0Y0GWN7ewVFHR01cFAzV1dXVDNStrJHkbW0M9Oz2gPlU9PSBlaKhnqGrvgJB3dDJUU1EHW2GoBjZET1VVxZkTHqourm7uah6eXt4+vn7+nl5uAYFBnsGqIaEwBWHhEXx+apFR0TGxcfEJiUnJKalp6RmqmYJQ+axslRy23DyD4PyCwqJivZLSsvKKSm8plSqYAdU1tXX1DY3qqk3WzS16Kq2lbe2MHZ2qXd1Q+Z5eg77+CRMnqegqT54yVc1gWpLf9BnyMxMSoqEKZs2ekzh33vwFC1UWLV6ydJne8tKgSStWrlpdBLNhzdp1Qus3bFwqu2nzlq0s27bvYNm5a/eevfvgkbH/wMFDhzWO9B49dnz9iZOnnDVPnzlbde78BHgoXZC0v6iianDp6OUrhmpqwEAEBqVK8FVETCyN0FM3ULt2/Yah6k19PWA0AGMk+FYpIpx7zt3WV7sz+a6Bqqq6OjAugdHgugclQd67r6r84GEwMAKAkaWmomr46DFqemJ+8vTZ8xf6QMPV9fRU9V4avRJkQAUsS4peq+ur6+rqGhpGvnlbgJEYk95tfv8hI/zjp89fvlYXYCZnlgtJDMyl377/+PmrFFti7/n9hwEfYG4uwCvP8PcP/kzcMxGvPACKJrWLehrH5AAAAABJRU5ErkJggg=="/>
-<script src="/msal-browser.min.js"></script>
-<script src="/app-config.js"></script>
-<script>
-/* ─── Microsoft (Azure AD) sign-in gate ──────────────────────────────────────
-   When the app is SERVED OVER THE WEB, require an authenticated Axis Microsoft
-   account; anyone not signed in is sent to the sign-in page. A downloaded or
-   offline copy (opened as a file://) is the user's own and is not gated, so
-   standalone builds keep working. */
-(function(){
-  try {
-    if (location.protocol === "file:") return;          // local copy — no gate
-    if (typeof msal === "undefined") return;            // library missing — do not lock out
-    window.__authApp = new msal.PublicClientApplication({
-      auth: {
-        clientId: "7485bf02-3fbf-478b-a4d0-05ddcc3b1c1e",
-        authority: "https://login.microsoftonline.com/e52a9a87-78f1-4048-b915-d974ad3d98ac",
-        redirectUri: window.location.origin
-      },
-      cache: { cacheLocation: "localStorage" }
-    });
-    if (!window.__authApp.getAllAccounts().length) {
-      location.replace("/login.html");
-    }
-  } catch(e){ /* never hard-fail the app on an auth error */ }
-})();
-function signOutAxis(){
-  try {
-    if (window.__authApp) {
-      var acct = window.__authApp.getAllAccounts()[0];
-      window.__authApp.logoutRedirect({ account: acct, postLogoutRedirectUri: "/login.html" });
-    } else { location.href = "/login.html"; }
-  } catch(e){ location.href = "/login.html"; }
-}
-/* Show a small "Sign out" control (with the signed-in user) only on the hosted,
-   authenticated app — never on a local/offline copy. */
-document.addEventListener("DOMContentLoaded", function(){
-  try {
-    if (location.protocol === "file:" || !window.__authApp) return;
-    var accts = window.__authApp.getAllAccounts();
-    if (!accts.length) return;
-    var who = accts[0].username || accts[0].name || "";
-    var bar = document.createElement("div");
-    bar.id = "axisAuthBar";
-    bar.style.cssText = "position:fixed;left:10px;bottom:10px;z-index:9999;display:flex;align-items:center;gap:8px;"
-      + "background:#6b6e70;color:#fff;font:600 11px/1 'IBM Plex Sans',Segoe UI,Arial,sans-serif;"
-      + "padding:7px 10px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.18);max-width:260px";
-    bar.innerHTML = '<span style="opacity:.85;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
-      + (who ? who.replace(/[<>&]/g,"") : "Signed in")
-      + '</span><button onclick="signOutAxis()" style="background:rgba(255,255,255,.18);color:#fff;border:none;'
-      + 'border-radius:5px;padding:4px 9px;font:inherit;cursor:pointer">Sign out</button>';
-    document.body.appendChild(bar);
-  } catch(e){ /* non-fatal */ }
-});
-</script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{--teal:#1a7a5e;--teal-d:#0f5740;--teal-l:#e8f5f0;--blue:#1e5fa8;--blue-l:#e8f0fa;--amber:#d4820a;--amber-l:#fdf3e0;--red:#c0392b;--grey:#f7f6f3;--border:#d8d5ce;--text:#2c2c28;--muted:#636159}
@@ -519,12 +464,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 .meter-block-header .mh-excluded{font-size:10px;font-weight:700;background:rgba(255,255,255,0.18);color:#fff;padding:2px 8px;border-radius:10px;letter-spacing:0.03em}
 .meter-block.excluded-from-report{opacity:0.62}
 .meter-block.excluded-from-report .meter-block-header{background:#6b6b64}
-/* Locked automation endpoints (Settings) */
-.ep-row{display:flex;gap:6px;align-items:center}
-.ep-url{flex:1;min-width:0;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;padding:7px 9px;border:1px solid var(--border);border-radius:6px;background:var(--grey);color:var(--text);cursor:text}
-.ep-url:focus{outline:none;border-color:var(--teal)}
-.lock-chip{font-size:9px;font-weight:700;background:#6b6e70;color:#fff;padding:1px 7px;border-radius:9px;letter-spacing:0.03em;vertical-align:middle}
-.ep-desc{font-size:11px;color:var(--muted);margin-top:4px;line-height:1.4}
 /* Inline-editable report text (e.g. Benchmark Comparison intro) */
 .rpt-editable{border:1px dashed transparent;border-radius:4px;padding:2px 4px;margin-left:-4px;cursor:text;transition:border-color .12s,background .12s}
 .rpt-editable:hover{border-color:var(--border);background:rgba(0,0,0,0.015)}
@@ -7124,42 +7063,6 @@ async function openProjectLauncher() {
 }
 
 // ── Settings: per-project edit password ───────────────────────────────────────
-// ─── Fixed Power Automate automation endpoints ─────────────────────────────────
-// Hard-coded and shown read-only in Settings. These are intentionally NOT
-// user-editable. To change one, edit the url here (one line each).
-const AUTOMATION_ENDPOINTS = [
-  { key:'getProjects',    label:'Get projects',        url:'https://defaulte52a9a8778f14048b915d974ad3d98.ac.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/08/workflows/289a74da130549f6883b954c73308717/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=GpVIHy-YabRc9wwPeVBxEpGflCAK5sQe4v9taZZjIE4', desc:`Receives {"state":"VIC"} and answers with the project register rows for that state. Without it the project dropdown stays empty and everything is typed by hand.` },
-  { key:'filePdf',        label:'File the PDF',         url:'https://defaulte52a9a8778f14048b915d974ad3d98.ac.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/25/workflows/c37a9a0d4f3046b8a168ec22e2c60a53/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=Z4KVnF-praWnQzNixEcsP0pnb85a_aOhgzqaSiIVy08', desc:`Receives the finished PDF and the project's folder path when someone clicks Download PDF. Without it the PDF still downloads, it just is not filed.` },
-  { key:'variationRead',  label:'Variation log — read', url:'https://defaulte52a9a8778f14048b915d974ad3d98.ac.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/24/workflows/743fda5967a24047ad5da01316588dee/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=3eoTVB5EGDKzcjlXvtRfsk0QO8rzQINb7i6O7O-V-ac', desc:`Receives {"state","projectId","variationRef"}. Without a reference it answers with that project's logged variations; with one, that variation in full. Without this flow the app still works, it just cannot reopen anything.` },
-  { key:'variationWrite', label:'Variation log — write', url:'https://defaulte52a9a8778f14048b915d974ad3d98.ac.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/27/workflows/bba6a4377f2f415dba14fc3ee5d06c7f/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=U0w6yi3vYrlL07b6mTD4da0aJ3NzBoSgpuKUsmRun_w', desc:`Receives the whole variation and creates or updates its row, matched on the project and the variation reference together.` },
-  { key:'writePro',       label:'Write professionally', optional:true, url:'https://defaulte52a9a8778f14048b915d974ad3d98.ac.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/29/workflows/fd2168d449474c899d01c07278b852d5/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=76qwSVy4AFkRbkRH9PGFLPyawu7yKnPtBpmEa9vdfZo' }
-];
-function integrationsSectionHtml(){
-  const rows = AUTOMATION_ENDPOINTS.map(e => `
-    <div class="fg">
-      <label>${escapeHtml(e.label)}${e.optional ? ' <span style="font-weight:400;color:var(--muted)">(optional)</span>' : ''} <span class="lock-chip">🔒 locked</span></label>
-      <div class="ep-row">
-        <input type="text" class="ep-url" readonly value="${escapeHtml(e.url)}" onclick="this.select()" title="Fixed endpoint — cannot be edited" aria-label="${escapeHtml(e.label)} URL"/>
-        <button type="button" class="btn btn-secondary btn-sm" onclick="copyEndpoint(this,'${e.key}')">Copy</button>
-      </div>
-      ${e.desc ? `<div class="ep-desc">${escapeHtml(e.desc)}</div>` : ''}
-    </div>`).join('');
-  return `<div class="set-h" style="margin-top:18px">Automation endpoints (Power Automate)</div>
-    <p class="bk-note">These connect the app to the Axis automations. They are fixed and cannot be edited.</p>
-    ${rows}`;
-}
-function copyEndpoint(btn, key){
-  const e = AUTOMATION_ENDPOINTS.find(x => x.key === key);
-  if (!e) return;
-  const done = () => { const o = btn.textContent; btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = o; }, 1200); };
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(e.url).then(done).catch(() => {});
-  } else {
-    const inp = btn.parentElement.querySelector('.ep-url');
-    if (inp) { inp.select(); try { document.execCommand('copy'); done(); } catch(_){} }
-  }
-}
-
 function openSettings(message) {
   const old = document.getElementById('settingsModalOverlay');
   if (old) old.remove();
@@ -7216,10 +7119,8 @@ function openSettings(message) {
       ${section}`;
   }
 
-  body += integrationsSectionHtml();
-
   document.body.insertAdjacentHTML('beforeend', `<div id="settingsModalOverlay" class="bk-overlay" onclick="if(event.target===this)this.remove()">
-    <div class="bk-modal" style="max-width:520px">
+    <div class="bk-modal" style="max-width:460px">
       <div class="bk-head">⚙ Project settings
         <button class="bk-close" onclick="document.getElementById('settingsModalOverlay').remove()">&times;</button>
       </div>
