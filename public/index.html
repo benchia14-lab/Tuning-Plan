@@ -519,6 +519,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 .meter-block-header .mh-excluded{font-size:10px;font-weight:700;background:rgba(255,255,255,0.18);color:#fff;padding:2px 8px;border-radius:10px;letter-spacing:0.03em}
 .meter-block.excluded-from-report{opacity:0.62}
 .meter-block.excluded-from-report .meter-block-header{background:#6b6b64}
+/* Locked automation endpoints (Settings) */
+.ep-row{display:flex;gap:6px;align-items:center}
+.ep-url{flex:1;min-width:0;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;padding:7px 9px;border:1px solid var(--border);border-radius:6px;background:var(--grey);color:var(--text);cursor:text}
+.ep-url:focus{outline:none;border-color:var(--teal)}
+.lock-chip{font-size:9px;font-weight:700;background:#6b6e70;color:#fff;padding:1px 7px;border-radius:9px;letter-spacing:0.03em;vertical-align:middle}
 /* Inline-editable report text (e.g. Benchmark Comparison intro) */
 .rpt-editable{border:1px dashed transparent;border-radius:4px;padding:2px 4px;margin-left:-4px;cursor:text;transition:border-color .12s,background .12s}
 .rpt-editable:hover{border-color:var(--border);background:rgba(0,0,0,0.015)}
@@ -7118,6 +7123,41 @@ async function openProjectLauncher() {
 }
 
 // ── Settings: per-project edit password ───────────────────────────────────────
+// ─── Fixed Power Automate automation endpoints ─────────────────────────────────
+// Hard-coded and shown read-only in Settings. These are intentionally NOT
+// user-editable. To change one, edit the url here (one line each).
+const AUTOMATION_ENDPOINTS = [
+  { key:'getProjects',    label:'Get projects',        url:'https://defaulte52a9a8778f14048b915d974ad3d98.ac.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/08/workflows/289a74da130549f6883b954c73308717/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=GpVIHy-YabRc9wwPeVBxEpGflCAK5sQe4v9taZZjIE4' },
+  { key:'filePdf',        label:'File the PDF',         url:'HTTPS://DEFAULTE52A9A8778F14048B915D974AD3D98.AC.ENVIRONMENT.API.POWERPLATFORM.COM:443/POWERAUTOMATE/AUTOMATIONS/DIRECT/CU/25/WORKFLOWS/C37A9A0D4F3046B8A168EC22E2C60A53/TRIGGERS/MANUAL/PATHS/INVOKE?API-VERSION=1&SP=%2FTRIGGERS%2FMANUAL%2FRUN&SV=1.0&SIG=Z4KVNF-PRAWNQZNIXECSP0PNB85A_AOHGZQASIIVY08' },
+  { key:'variationRead',  label:'Variation log — read', url:'HTTPS://DEFAULTE52A9A8778F14048B915D974AD3D98.AC.ENVIRONMENT.API.POWERPLATFORM.COM:443/POWERAUTOMATE/AUTOMATIONS/DIRECT/CU/24/WORKFLOWS/743FDA5967A24047AD5DA01316588DEE/TRIGGERS/MANUAL/PATHS/INVOKE?API-VERSION=1&SP=%2FTRIGGERS%2FMANUAL%2FRUN&SV=1.0&SIG=3EOTVB5EGDKZCJLXVTRFSK0QO8RZQINB7I6O7O-V-AC' },
+  { key:'variationWrite', label:'Variation log — write', url:'https://defaulte52a9a8778f14048b915d974ad3d98.ac.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/27/workflows/bba6a4377f2f415dba14fc3ee5d06c7f/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=U0w6yi3vYrlL07b6mTD4da0aJ3NzBoSgpuKUsmRun_w' },
+  { key:'writePro',       label:'Write professionally', optional:true, url:'https://defaulte52a9a8778f14048b915d974ad3d98.ac.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/29/workflows/fd2168d449474c899d01c07278b852d5/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=76qwSVy4AFkRbkRH9PGFLPyawu7yKnPtBpmEa9vdfZo' }
+];
+function integrationsSectionHtml(){
+  const rows = AUTOMATION_ENDPOINTS.map(e => `
+    <div class="fg">
+      <label>${escapeHtml(e.label)}${e.optional ? ' <span style="font-weight:400;color:var(--muted)">(optional)</span>' : ''} <span class="lock-chip">🔒 locked</span></label>
+      <div class="ep-row">
+        <input type="text" class="ep-url" readonly value="${escapeHtml(e.url)}" onclick="this.select()" title="Fixed endpoint — cannot be edited" aria-label="${escapeHtml(e.label)} URL"/>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="copyEndpoint(this,'${e.key}')">Copy</button>
+      </div>
+    </div>`).join('');
+  return `<div class="set-h" style="margin-top:18px">Automation endpoints (Power Automate)</div>
+    <p class="bk-note">These connect the app to the Axis automations. They are fixed and cannot be edited.</p>
+    ${rows}`;
+}
+function copyEndpoint(btn, key){
+  const e = AUTOMATION_ENDPOINTS.find(x => x.key === key);
+  if (!e) return;
+  const done = () => { const o = btn.textContent; btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = o; }, 1200); };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(e.url).then(done).catch(() => {});
+  } else {
+    const inp = btn.parentElement.querySelector('.ep-url');
+    if (inp) { inp.select(); try { document.execCommand('copy'); done(); } catch(_){} }
+  }
+}
+
 function openSettings(message) {
   const old = document.getElementById('settingsModalOverlay');
   if (old) old.remove();
@@ -7174,8 +7214,10 @@ function openSettings(message) {
       ${section}`;
   }
 
+  body += integrationsSectionHtml();
+
   document.body.insertAdjacentHTML('beforeend', `<div id="settingsModalOverlay" class="bk-overlay" onclick="if(event.target===this)this.remove()">
-    <div class="bk-modal" style="max-width:460px">
+    <div class="bk-modal" style="max-width:520px">
       <div class="bk-head">⚙ Project settings
         <button class="bk-close" onclick="document.getElementById('settingsModalOverlay').remove()">&times;</button>
       </div>
