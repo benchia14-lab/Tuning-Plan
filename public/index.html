@@ -2985,7 +2985,6 @@ function _renderReportInner(out) {
         </tr>
       </tbody>
     </table></div>
-    <div class="rpt-body" style="font-size:11px;color:var(--muted);margin-top:8px">${ST.virtualMeters.filter(vm=>vm.members.length).map(vm=>`<div>${vm.name}: ${vm.members.join(' + ')} = ${dv(vm.members.reduce((s,m)=>s+totalForKeyAcrossPeriods(m),0))} ${unitLabel()}</div>`).join('')}</div>
 
     <div class="rpt-h2" style="margin-top:18px">3.2 System Consumption — Chart View</div>
     <div class="rpt-body" style="margin-bottom:14px">Total consumption per metered system across all reporting periods.</div>
@@ -3112,11 +3111,11 @@ function _renderReportInner(out) {
 
     const valColW = '';
     html += '<div class="card rpt-section">' +
-      '<div class="rpt-h1">5\xa0\xa0\xa0Cross-Period Water Consumption — All Meters</div>' +
-      '<div class="rpt-body" style="margin-bottom:12px">Total consumption for every metered system across all reporting periods. Values in ${unitLabel()}.</div>' +
+      '<div class="rpt-h1">5\xa0\xa0\xa0Cross-Period Water Consumption</div>' +
+      '<div class="rpt-body" style="margin-bottom:12px">Combined consumption for each metered system (virtual meter) across all reporting periods. Values in '+unitLabel()+'. The individual meters that make up each system are listed in the Appendix.</div>' +
       '<div class="data-tbl-wrap" style="overflow-x:auto"><table class="data-tbl" style="width:100%">' +
       '<thead><tr><th>Meter / System</th>' +
-      ST.periods.map(p=>'<th class="right">'+p.label+' (${unitLabel()})</th>').join('') +
+      ST.periods.map(p=>'<th class="right">'+p.label+' ('+unitLabel()+')</th>').join('') +
       (showTotAvg?'<th class="right">Total '+unitLabel()+'</th><th class="right">Avg '+unitLabel()+'/pd</th>':'') +
       '</tr></thead><tbody>';
 
@@ -3130,15 +3129,7 @@ function _renderReportInner(out) {
         '</tr>';
     });
 
-    // Individual raw meters
-    allKeys.forEach((key,ki)=>{
-      const pTotals = ST.periods.map(p=>sumArr(p.series[key]||[]));
-      const gTot = pTotals.reduce((s,v)=>s+v,0);
-      html += '<tr><td style="font-family:monospace;font-size:11px">'+labelFor(key)+'</td>' +
-        pTotals.map(t=>'<td class="right">'+dv(t)+'</td>').join('') +
-        (showTotAvg?'<td class="right">'+dv(gTot)+'</td><td class="right">'+dv(gTot/Math.max(1,nP))+'</td>':'') +
-        '</tr>';
-    });
+    // (Individual raw meters are listed in the Appendix, grouped by virtual meter.)
 
     // Combined total (raw meters only — excludes mains and mains-excluded)
     const grandPer = ST.periods.map(p=>meterKeysOf(p).reduce((s,k)=>s+sumArr(p.series[k]||[]),0));
@@ -3170,10 +3161,6 @@ function _renderReportInner(out) {
     }
 
     html += '</tbody></table></div>';
-    // Cross-period comparison chart
-    html += '<div class="chart-card" style="margin-top:12px"><h4>Period Comparison</h4>' +
-      '<div id="cumulLeg" class="chart-legend"></div>' +
-      '<div class="meter-chart-wrap"><canvas id="cumulChart"></canvas></div></div>';
     html += '</div>';
   }
 
@@ -3334,6 +3321,36 @@ function _renderReportInner(out) {
       : '<p style="font-size:13px;color:var(--muted);padding:8px 0">No observations included. Go to Section 6 to manage findings.</p>'
     ) +
     '</div>';
+
+  // Appendix: every individual meter, grouped under its virtual meter (system).
+  const apGroupsHtml = appendixMeterGroups();
+  if (apGroupsHtml.length) {
+    const apNum = (6 + secShift + (benchGroupRows.length ? 1 : 0)) + 1;
+    const nPx = ST.periods.length, showAvgX = nPx > 1;
+    html += '<div class="card rpt-section">' +
+      '<div class="rpt-h1">' + apNum + '\xa0\xa0\xa0Appendix — Individual Meter Consumption</div>' +
+      '<div class="rpt-body" style="margin-bottom:12px">Every individual meter, grouped under the virtual meter (system) it belongs to. Values in ' + unitLabel() + '.</div>';
+    apGroupsHtml.forEach(g => {
+      html += '<div class="rpt-h2" style="margin-top:16px">' + escapeHtml(g.name) +
+        ' <span style="font-weight:400;color:var(--muted);font-size:12px">— ' + g.members.length + ' meter' + (g.members.length !== 1 ? 's' : '') + '</span></div>' +
+        '<div class="data-tbl-wrap" style="overflow-x:auto"><table class="data-tbl" style="width:100%"><thead><tr><th>Meter</th>' +
+        ST.periods.map(p => '<th class="right">' + p.label + '</th>').join('') +
+        (showAvgX ? '<th class="right">Total ' + unitLabel() + '</th><th class="right">Avg ' + unitLabel() + '/pd</th>' : '') +
+        '</tr></thead><tbody>';
+      g.members.forEach(m => {
+        const pT = ST.periods.map(p => sumArr(p.series[m] || []));
+        const gt = pT.reduce((s, v) => s + v, 0);
+        const neg = g.negative && g.negative.has(m);
+        html += '<tr><td style="font-family:monospace;font-size:11px">' + escapeHtml(m) +
+          (neg ? ' <span style="font-family:inherit;font-size:9px;color:var(--red)">(deducted)</span>' : '') + '</td>' +
+          pT.map(t => '<td class="right">' + dv(t) + '</td>').join('') +
+          (showAvgX ? '<td class="right">' + dv(gt) + '</td><td class="right">' + dv(gt / Math.max(1, nPx)) + '</td>' : '') +
+          '</tr>';
+      });
+      html += '</tbody></table></div>';
+    });
+    html += '</div>';
+  }
 
   out.innerHTML = html;
 
@@ -3590,42 +3607,8 @@ function _renderReportInner(out) {
     // (Per-period pbench/mbench charts removed — benchmark data is now overlaid
     //  directly on the combined mtrend charts above.)
 
-    // Cross-period comparison chart in section 5
-    const cctx = document.getElementById('cumulChart');
-    if(cctx){
-      const leg = document.getElementById('cumulLeg');
-      if(leg) leg.innerHTML = ST.periods.map((p,i)=>`<span><b style="background:${COLORS[i%COLORS.length]};border-radius:2px;display:inline-block;width:10px;height:10px"></b> ${p.label}</span>`).join('');
-      const allMonthsFlat = ST.periods.flatMap(p=>p.months.map(m=>p.label+' – '+m));
-      const ds2 = ST.periods.map((p,i)=>({
-        label:p.label,
-        data: allMonthsFlat.map(lbl => {
-          const [pLabel, month] = lbl.split(' – ');
-          if (pLabel !== p.label) return null;
-          const mi = p.months.indexOf(month);
-          return mi >= 0 ? dvRaw(p.combined[mi]) : null;
-        }),
-        backgroundColor:COLORS[i%COLORS.length]+'99',
-        borderColor:COLORS[i%COLORS.length],
-        borderWidth:2, borderRadius:3, borderSkipped:false
-      }));
-      ST.charts.push(new Chart(cctx,{
-        type:'bar',
-        data:{labels:allMonthsFlat, datasets:ds2},
-        options:{
-          responsive:true, maintainAspectRatio:false,
-          layout:{ padding:{ top: 16 } },
-          plugins:{
-            legend:{display:ST.periods.length>1},
-            tooltip:{ callbacks:{ label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)} ${unitLabel()}` } }
-          },
-          scales:{
-            x:{ticks:{font:{size:9}},grid:{display:false}},
-            y:{ticks:{callback:v=>v+' '+unitLabel(),font:{size:10}},grid:{color:'rgba(0,0,0,0.04)'}}
-          }
-        },
-        plugins:[barLabelPlugin]
-      }));
-    }
+    // (The Section 5 cross-period comparison chart was removed — it duplicated the
+    //  Section 4 "Water Usage by Period" chart.)
   });
 } // end _renderReportInner
 
@@ -4202,6 +4185,26 @@ function toggleMeterInReport(key, included){
 }
 // Meter rows that should appear in the report's per-meter detail section.
 function reportMeterRows(){ return effectiveMeterRowsCombined().filter(r => isMeterInReport(r.key)); }
+
+// Appendix grouping: each virtual meter with its member (individual) meters, plus
+// any raw meters not assigned to a virtual meter. Used by the Section 9 appendix
+// (full list of every individual meter grouped under its virtual meter).
+function appendixMeterGroups(){
+  const groups = [];
+  const claimed = new Set();
+  ST.virtualMeters.filter(vm => vm.members && vm.members.length).forEach(vm => {
+    vm.members.forEach(m => claimed.add(m));
+    groups.push({
+      name: vm.name || 'Virtual meter',
+      members: vm.members.slice(),
+      negative: new Set(vm.negativeMembers || [])
+    });
+  });
+  const seen = new Set(); const unclaimed = [];
+  ST.periods.forEach(p => meterKeysOf(p).forEach(k => { if (!claimed.has(k) && !seen.has(k)) { seen.add(k); unclaimed.push(k); } }));
+  if (unclaimed.length) groups.push({ name: 'Unassigned meters', members: unclaimed, negative: new Set() });
+  return groups;
+}
 
 // Flat list of effective meter labels across ALL periods (virtual + unclaimed raw).
 function allEffectiveLabels() {
@@ -8290,16 +8293,8 @@ async function generatePDF(){
     const totalBenchCols = hasBenchPdf ? ['__R__—','__R__—'] : [];
     totalRow(['Total Water Usage',unitLabel(),...pTots.map(vv=>`__R__${vv.toFixed(1)}`),`__R__${grandTot.toFixed(1)}`,...totalBenchCols],sumW);
     y+=4;
-    if (ST.virtualMeters.filter(vm=>vm.members.length).length) {
-      ST.virtualMeters.filter(vm=>vm.members.length).forEach(vm=>{
-        const tot = vm.members.reduce((s,m)=>s+totalForKeyAcrossPeriods(m),0);
-        const fnText = vm.name + ': ' + vm.members.join(' + ') + ' = ' + tot.toFixed(1) + ' ' + unitLabel();
-        sf('normal',FS.small);   // set font before measuring
-        const fnLines = doc.splitTextToSize(fnText, CW);
-        fnLines.forEach(l=>{chk(5);sf('normal',FS.small);stxt(GREY_T);doc.text(l,ML,y);y+=4;});
-      });
-      y+=2;
-    }
+    // (Per-virtual-meter composition breakdown removed — the full list of the
+    //  individual meters behind each virtual meter is in the Appendix.)
 
     // ── SECTION 3.2: System Consumption Chart ────────────────────────────────
     subHead('3.2 System Consumption — Chart View');
@@ -8504,8 +8499,8 @@ async function generatePDF(){
     const secNum6xp = 5;  // Cross-Period Water Consumption (now Section 5)
     {
       nlp(); // landscape — periods as columns
-      sectionHead(`${secNum6xp}`, 'Cross-Period Water Consumption — All Meters');
-      bodyText(`Total consumption for every metered system across all reporting periods. Values in ${unitLabel()}.`);
+      sectionHead(`${secNum6xp}`, 'Cross-Period Water Consumption');
+      bodyText(`Combined consumption for each metered system (virtual meter) across all reporting periods. Values in ${unitLabel()}. The individual meters that make up each system are listed in the Appendix.`);
       y+=3;
 
       // Collect every unique raw meter key across all periods
@@ -8566,26 +8561,9 @@ async function generatePDF(){
       });
       if(allVMs6.length) y+=2;
 
-      // Individual raw meter rows
-      allKeys6.forEach((key, ki) => {
-        chk(5.5);
-        const pTotals = ST.periods.map(pp=>sumArr(pp.series[key]||[]));
-        const gTot = pTotals.reduce((s,v)=>s+v,0);
-        const lbl = labelFor(key);
-        sfill(ki%2===0?WHITE:GREY); doc.rect(ML,y,CW,5.5,'F');
-        sdraw(BDR); doc.setLineWidth(0.08); doc.rect(ML,y,CW,5.5,'S');
-        sf('normal',FS.tableBody); stxt(DARK);
-        doc.text(lbl.length>30?lbl.slice(0,28)+'…':lbl, ML+2, y+3.8);
-        const rawCells6 = showTotalAvg6
-          ? [...pTotals.map(v=>v.toFixed(1)), gTot.toFixed(1), (gTot/Math.max(1,nP)).toFixed(1)]
-          : pTotals.map(v=>v.toFixed(1));
-        let mcx6=ML+nameW6;
-        rawCells6.forEach((val,i)=>{
-          const w=i<nP?periodW6:(i===nP?totW6:avgW6);
-          doc.text(val, mcx6+w-2, y+3.8, {align:'right'}); mcx6+=w;
-        });
-        y+=5.5;
-      });
+      // (Individual raw meter rows are NOT listed here — they appear in the
+      //  Appendix, grouped under each virtual meter. Section 5 shows the
+      //  system-level totals only.)
 
       // Grand totals footer (sub-meters only)
       chk(6);
@@ -8615,31 +8593,8 @@ async function generatePDF(){
         y+=5;
       }
       y+=2;
-
-      // Cross-period chart — fits in remaining space or new page
-      const cumulCanvas = document.getElementById('cumulChart');
-      if (cumulCanvas) {
-        try {
-          const cumulImg = chartImage('cumulChart') || cumulCanvas.toDataURL('image/jpeg', 0.82);
-          const remain6 = (PH - MB - 11) - y;
-          if (remain6 >= 40) {
-            const cH6 = Math.min(75, remain6 - 4);
-            sfill(WHITE); sdraw(BDR); doc.setLineWidth(0.2);
-            doc.roundedRect(ML,y,CW,cH6,2,2,'FD');
-            doc.addImage(cumulImg,'JPEG',ML+2,y+2,CW-4,cH6-4);
-            y+=cH6+4;
-          } else {
-            nlp();
-            subHead(`${secNum6xp}.1   Cross-Period Comparison Chart`);
-            y+=2;
-            const cH6b = Math.min(150, PH-y-MB-15);
-            sfill(WHITE); sdraw(BDR); doc.setLineWidth(0.2);
-            doc.roundedRect(ML,y,CW,cH6b,2,2,'FD');
-            doc.addImage(cumulImg,'JPEG',ML+2,y+2,CW-4,cH6b-4);
-            y+=cH6b+4;
-          }
-        } catch(e) {}
-      }
+      // (The per-period combined chart that used to sit here has been removed —
+      //  it duplicated the "Water Usage by Period" chart in Section 4.)
     }
 
     // ── SECTION 6 (conditional): MAINS WATER SUPPLY ───────────────────────────
@@ -8810,33 +8765,54 @@ async function generatePDF(){
         chk(7);
         tableRow([row.label, ...cells], bcColWs, ri%2===0);
       });
-      y+=6;
+      y+=8;
 
-      // Back to portrait for the per-group charts.
-      np();
-      // 7.x — one side-by-side chart per group
-      benchRowsPdf.forEach((row, gi) => {
-        const chartCanvas = document.getElementById('bmgroupchart_' + row.id);
-        if (!chartCanvas) return;
-        chk(20);
-        subHead(`${secNum7bench}.${gi+2}  ${row.label}`);
-        sf('normal',FS.small); stxt(GREY_T);
+      // Per-group charts laid out side by side on THIS landscape page (keeps them
+      // with the summary table, using the available width). Aspect ratio is
+      // preserved so the bars aren't stretched; wraps to a new landscape page only
+      // if there are too many groups to fit.
+      const bPerRow = Math.min(2, benchRowsPdf.length);
+      const bGap = 6;
+      const bColW = (CW - bGap*(bPerRow-1)) / bPerRow;
+      const bHeadH = 5, bMemMax = 3, bCapH = 95;
+      const bCells = benchRowsPdf.map(row => {
+        const cv = document.getElementById('bmgroupchart_' + row.id);
+        const ar = (cv && cv.width && cv.height) ? cv.width/cv.height : 2.0;
+        let drawW = bColW, drawH = bColW/ar;
+        if (drawH > bCapH) { drawH = bCapH; drawW = bCapH*ar; }
+        if (drawW > bColW) { drawW = bColW; drawH = bColW/ar; }
+        sf('normal',FS.small);
         const memText = 'Combined from: ' + row.memberLabels.join(' + ') + (row.annual?('  ·  ' + row.annual.toLocaleString(undefined,{maximumFractionDigits:0}) + ' ' + unitLabel() + '/yr target'):'');
-        doc.splitTextToSize(memText, CW).forEach(l=>{chk(5);sf('normal',FS.small);stxt(GREY_T);doc.text(l,ML,y);y+=4;});
-        y+=1;
-        const pageBottom = PH - MB - 11;
-        const remainH = pageBottom - y;
-        const chartH = Math.max(30, Math.min(60, remainH - 2));
-        if (remainH < 34) { np(); }
-        try {
-          const imgData = chartImage('bmgroupchart_' + row.id) || chartCanvas.toDataURL('image/jpeg', 0.82);
-          sfill(WHITE); sdraw(BDR); doc.setLineWidth(0.15);
-          doc.roundedRect(ML, y, CW, chartH, 1.5, 1.5, 'FD');
-          doc.addImage(imgData, 'JPEG', ML+1, y+1, CW-2, chartH-2);
-          y += chartH + 4;
-        } catch(e) { y += 2; }
+        const memLines = doc.splitTextToSize(memText, bColW).slice(0, bMemMax);
+        return { row, cv, drawW, drawH, memLines, cellH: bHeadH + memLines.length*3.6 + 2 + drawH };
       });
-      y+=4;
+      for (let i=0; i<bCells.length; i+=bPerRow) {
+        const rowCells = bCells.slice(i, i+bPerRow);
+        const rowH = Math.max(...rowCells.map(c=>c.cellH));
+        if (y + rowH > PH - MB - 11) { nlp(); y = 20; }
+        const rowTop = y;
+        rowCells.forEach((c, ci) => {
+          const gi = i + ci;
+          const colX = ML + ci*(bColW + bGap);
+          let cy = rowTop;
+          sf('bold',FS.subHead); stxt(TEAL_D);
+          doc.text(`${secNum7bench}.${gi+2}  ${c.row.label}`, colX, cy+3.5);
+          cy += bHeadH;
+          sf('normal',FS.small); stxt(GREY_T);
+          c.memLines.forEach((l,li)=>doc.text(l, colX, cy+2.6+(li*3.6)));
+          cy += c.memLines.length*3.6 + 2;
+          if (c.cv) {
+            try {
+              const imgData = chartImage('bmgroupchart_' + c.row.id) || c.cv.toDataURL('image/jpeg', 0.82);
+              const drawX = colX + (bColW - c.drawW)/2;
+              sfill(WHITE); sdraw(BDR); doc.setLineWidth(0.15);
+              doc.roundedRect(drawX, cy, c.drawW, c.drawH, 1.5, 1.5, 'FD');
+              doc.addImage(imgData, 'JPEG', drawX+1, cy+1, c.drawW-2, c.drawH-2);
+            } catch(e) {}
+          }
+        });
+        y = rowTop + rowH + 6;
+      }
     }
 
     // ── OBSERVATIONS (from curated ST.observations or auto-generated) ─────────
@@ -9010,6 +8986,54 @@ async function generatePDF(){
         y+=2;
       });
       y+=4;
+    }
+
+    // ── APPENDIX: INDIVIDUAL METER CONSUMPTION — grouped by virtual meter ──────
+    {
+      const apGroups = appendixMeterGroups();
+      if (apGroups.length) {
+        p(95,'Appendix…'); nlp();
+        const lastSecNum = (ST.actions && ST.actions.length) ? secNumObs + 1 : secNumObs;
+        const appendixNum = lastSecNum + 1;
+        sectionHead(`${appendixNum}`, 'Appendix — Individual Meter Consumption');
+        bodyText(`Every individual meter, grouped under the virtual meter (system) it belongs to. Values in ${unitLabel()}.`);
+        y+=3;
+
+        const nPa = ST.periods.length;
+        const showAvgA = nPa > 1;
+        const apNameW = Math.min(62, Math.max(44, CW - nPa*24 - (showAvgA?26+22:0)));
+        const apPerW  = Math.max(18, Math.floor((CW - apNameW - (showAvgA?26+22:0)) / Math.max(1,nPa)));
+        const apTotW  = showAvgA ? 26 : 0;
+        const apAvgW  = showAvgA ? Math.max(18, CW - apNameW - apPerW*nPa - apTotW) : 0;
+        const apWidths = showAvgA ? [apNameW, ...Array(nPa).fill(apPerW), apTotW, apAvgW] : [apNameW, ...Array(nPa).fill(apPerW)];
+
+        const apBottom = PH - MB - 9;
+        const drawApHead = (g, continued) => {
+          sfill(TEAL_D); doc.rect(ML, y, CW, 6, 'F');
+          sf('bold',FS.tableBody); stxt(WHITE);
+          doc.text(continued ? `${g.name} (continued)` : `${g.name}`, ML+2, y+4.2);
+          sf('normal',FS.label); stxt([220,235,228]);
+          doc.text(`${g.members.length} meter${g.members.length!==1?'s':''}`, ML+CW-2, y+4.2, {align:'right'});
+          y += 6;
+          tableHeader(['Meter', ...ST.periods.map(pp=>pp.label), ...(showAvgA?['Total','Avg/Pd']:[])], apWidths);
+        };
+        apGroups.forEach((g) => {
+          // Keep the heading + column header + first data row together.
+          if (y + 2 + 6 + 6 + 5.5 > apBottom) { nlp(); y = 20; }
+          y += 2;
+          drawApHead(g, false);
+          g.members.forEach((m, mi) => {
+            if (y + 5.5 > apBottom) { nlp(); y = 20; drawApHead(g, true); }  // repeat heading on spill
+            const pTotals = ST.periods.map(pp => sumArr(pp.series[m]||[]));
+            const gTot = pTotals.reduce((s,v)=>s+v,0);
+            const nm = (g.negative && g.negative.has(m)) ? (m + ' (deducted)') : m;
+            const nameCell = nm.length > Math.floor(apNameW/1.7) ? nm.slice(0, Math.floor(apNameW/1.7)-1)+'…' : nm;
+            const cells = [nameCell, ...pTotals.map(v=>`__R__${v.toFixed(1)}`), ...(showAvgA?[`__R__${gTot.toFixed(1)}`,`__R__${(gTot/Math.max(1,nPa)).toFixed(1)}`]:[])];
+            tableRow(cells, apWidths, mi%2===0);
+          });
+        });
+        y+=4;
+      }
     }
 
     // ── Render Table of Contents on the reserved page ─────────────────────────
